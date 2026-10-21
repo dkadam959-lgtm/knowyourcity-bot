@@ -58,6 +58,12 @@ REFERRAL_BONUS = 5
 STREAK_BONUS_DAYS = 7      # every 7 consecutive days
 STREAK_BONUS = 10
 
+# Google Sheet as the master question list (optional). Any of these forms work:
+#   full sheet URL https://docs.google.com/spreadsheets/d/<ID>/edit#gid=0
+#   or just the <ID>
+SHEET_URL = os.environ.get("SHEET_URL", "").strip()
+SHEET_SYNC_MINUTES = int(os.environ.get("SHEET_SYNC_MINUTES", "10"))
+
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "kyc.db")
 QUESTIONS_PATH = os.path.join(DATA_DIR, "questions.csv")
@@ -102,6 +108,13 @@ def init_db():
                 PRIMARY KEY (user_id, qday, qid)
             );
             CREATE INDEX IF NOT EXISTS idx_answers_day ON answers(qday);
+            CREATE TABLE IF NOT EXISTS extra_questions (
+                id INTEGER PRIMARY KEY,
+                category TEXT, question TEXT,
+                option_a TEXT, option_b TEXT, option_c TEXT, option_d TEXT,
+                correct INTEGER, explanation TEXT, image TEXT,
+                qdate TEXT, created TEXT
+            );
             """
         )
 
@@ -112,11 +125,144 @@ def init_db():
 QUESTIONS = []   # list of dicts
 
 
+def read_rows(path):
+    """Read question rows from .csv or .xlsx. Returns list of dicts with str values."""
+    if path.lower().endswith(".xlsx"):
+        from openpyxl import load_workbook
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        it = ws.iter_rows(values_only=True)
+        header = [str(h).strip() if h is not None else "" for h in next(it)]
+        out = []
+        for row in it:
+            if row is None or all(v in (None, "") for v in row):
+                continue
+            d = {}
+            for h, v in zip(header, row):
+                if h:
+                    d[h] = "" if v is None else (str(int(v)) if isinstance(v, float) and v.is_integer() else str(v))
+            out.append(d)
+        return out
+    with open(path, encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
+import hashlib
+import re
+import urllib.request
+
+
+def sheet_csv_url():
+    """Turn a Google Sheet link or id into its CSV export link."""
+    if not SHEET_URL:
+        return ""
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", SHEET_URL)
+    sid = m.group(1) if m else SHEET_URL
+    gid = "0"
+    g = re.search(r"[#&?]gid=(\d+)", SHEET_URL)
+    if g:
+        gid = g.group(1)
+    return f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
+
+
+def fetch_url(url, timeout=30):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 KnowYourCityBot"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def sync_sheet() -> str:
+    """Download the Google Sheet as CSV. Returns 'changed', 'same', or an error text."""
+    url = sheet_csv_url()
+    if not url:
+        return "no sheet"
+    try:
+        data = fetch_url(url)
+    except Exception as e:
+        return f"error {e}"
+    if data[:1] == b"<":
+        return "error sheet is not shared. Share it as Anyone with the link can view."
+    new_hash = hashlib.md5(data).hexdigest()
+    old_hash = ""
+    if os.path.exists(QUESTIONS_PATH):
+        with open(QUESTIONS_PATH, "rb") as f:
+            old_hash = hashlib.md5(f.read()).hexdigest()
+    if new_hash == old_hash:
+        return "same"
+    # validate before replacing
+    tmp = QUESTIONS_PATH + ".new"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    try:
+        rows = read_rows(tmp)
+        need = {"id", "question", "option_a", "option_b", "option_c", "option_d", "correct"}
+        if not rows or not need.issubset(set(rows[0].keys())):
+            return "error sheet columns missing"
+    except Exception as e:
+        return f"error {e}"
+    os.replace(tmp, QUESTIONS_PATH)
+    load_questions()
+    return "changed"
+
+
+def drive_direct(url: str) -> str:
+    """Google Drive share link -> direct download link."""
+    m = re.search(r"drive\.google\.com/(?:file/d/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    return url
+
+
+def image_bytes(img: str):
+    """Return (bytes, path) for an image reference: URL (incl. Drive) or a local file name. Cached."""
+    os.makedirs(os.path.join(DATA_DIR, "images"), exist_ok=True)
+    if img.startswith("http"):
+        key = hashlib.md5(img.encode()).hexdigest()[:16] + ".img"
+        path = os.path.join(DATA_DIR, "images", key)
+        if not os.path.exists(path):
+            data = fetch_url(drive_direct(img), timeout=60)
+            if data[:1] == b"<":
+                raise ValueError("image link is not public")
+            with open(path, "wb") as f:
+                f.write(data)
+        return path
+    local = os.path.join(DATA_DIR, "images", img)
+    return local if os.path.exists(local) else None
+
+
+def norm_date(s: str) -> str:
+    """Accept 2026-11-05, 05-11-2026, 5/11/2026 -> 2026-11-05. Empty if not a date."""
+    s = s.strip()
+    if not s:
+        return ""
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return ""
+
+
+def extra_questions(qdate=None):
+    """Questions added in Telegram. qdate=None -> undated ones (go to the rotation pool)."""
+    with db() as con:
+        if qdate is None:
+            rows = con.execute("SELECT * FROM extra_questions WHERE qdate IS NULL OR qdate='' ORDER BY id").fetchall()
+        else:
+            rows = con.execute("SELECT * FROM extra_questions WHERE qdate=? ORDER BY id", (qdate,)).fetchall()
+    return [{
+        "id": r["id"], "category": r["category"] or "", "question": r["question"],
+        "options": [r["option_a"], r["option_b"], r["option_c"], r["option_d"]],
+        "correct": r["correct"], "explanation": r["explanation"] or "", "source": "",
+        "image": r["image"] or "", "date": r["qdate"] or "",
+    } for r in rows]
+
+
 def load_questions():
     global QUESTIONS
     rows = []
-    with open(QUESTIONS_PATH, encoding="utf-8-sig") as f:
-        for r in csv.DictReader(f):
+    for r in read_rows(QUESTIONS_PATH):
+        if True:
             try:
                 q = {
                     "id": int(r["id"]),
@@ -127,6 +273,8 @@ def load_questions():
                     "correct": "ABCD".index(r["correct"].strip().upper()),
                     "explanation": r.get("explanation", "").strip(),
                     "source": (r.get("source") or "").strip(),
+                    "image": (r.get("image") or "").strip(),
+                    "date": norm_date((r.get("date") or "").strip()),
                 }
                 if q["question"] and all(q["options"]):
                     rows.append(q)
@@ -147,16 +295,25 @@ def quiz_day(dt=None) -> str:
 
 
 def questions_for_day(qday: str):
-    """Deterministic rotation: 5 questions per day in CSV order, wraps around."""
-    if not QUESTIONS:
-        return []
+    """Dated questions for that day first (Telegram /add with a date, or sheet 'date' column).
+    If fewer than 5, the rest come from the rotation over the undated pool."""
+    dated = extra_questions(qday) + [q for q in QUESTIONS if q.get("date") == qday]
+    out = dated[:QUESTIONS_PER_DAY]
+    if len(out) >= QUESTIONS_PER_DAY:
+        return out
+    pool = [q for q in QUESTIONS if not q.get("date")] + extra_questions(None)
+    if not pool:
+        return out
     d = date.fromisoformat(qday)
     idx = max(0, (d - START_DATE).days)
-    n = len(QUESTIONS)
+    n = len(pool)
     start = (idx * QUESTIONS_PER_DAY) % n
-    out = []
-    for i in range(QUESTIONS_PER_DAY):
-        out.append(QUESTIONS[(start + i) % n])
+    i = 0
+    while len(out) < QUESTIONS_PER_DAY and i < n:
+        q = pool[(start + i) % n]
+        if q not in out:
+            out.append(q)
+        i += 1
     return out
 
 
@@ -164,7 +321,14 @@ def qbyid(qid):
     for q in QUESTIONS:
         if q["id"] == qid:
             return q
-    return None
+    with db() as con:
+        r = con.execute("SELECT * FROM extra_questions WHERE id=?", (qid,)).fetchone()
+    if not r:
+        return None
+    return {"id": r["id"], "category": r["category"] or "", "question": r["question"],
+            "options": [r["option_a"], r["option_b"], r["option_c"], r["option_d"]],
+            "correct": r["correct"], "explanation": r["explanation"] or "", "source": "",
+            "image": r["image"] or "", "date": r["qdate"] or ""}
 
 
 # --------------------------------------------------------------------------
@@ -275,6 +439,19 @@ async def send_next_question(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     expl = q["explanation"]
     if q["source"]:
         expl = (expl + "\nस्रोत " + q["source"]).strip()
+    if q.get("image"):
+        try:
+            img = q["image"]
+            path = image_bytes(img) if (img.startswith("http") or "." in img) else None
+            if path:
+                with open(path, "rb") as fh:
+                    await context.bot.send_photo(user_id, fh, caption=f"प्रश्न {idx + 1} साठी फोटो")
+            else:
+                await context.bot.send_photo(user_id, img, caption=f"प्रश्न {idx + 1} साठी फोटो")  # telegram file_id
+        except Forbidden:
+            return
+        except Exception as e:
+            log.warning("photo failed for q%s: %s", q["id"], e)
     try:
         msg = await context.bot.send_poll(
             chat_id=user_id,
@@ -531,7 +708,8 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/play आजचे प्रश्न\n/score माझे गुण\n/top आजची यादी\n/top week आठवड्याची यादी\n"
-        "/top month महिन्याची यादी\n/remind off आठवण बंद\n/remind on आठवण सुरू")
+        "/top month महिन्याची यादी\n/remind off आठवण बंद\n/remind on आठवण सुरू"
+        + ("\n\nऍडमिन\n/add नवा प्रश्न\n/bank प्रश्न साठा\n/show 12 प्रश्न बघा\n/del 12 प्रश्न काढा\n/preview आजचे प्रश्न\n/stats आकडे\n/post morning|evening|remind\n/broadcast मेसेज\n/export /backup" if is_admin(update) else ""))
 
 
 # --------------------------------------------------------------------------
@@ -558,11 +736,17 @@ async def cmd_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/preview  or  /preview 2026-11-03  shows that day's questions to admin."""
     if not is_admin(update):
         return
-    qday = context.args[0] if context.args else quiz_day()
+    arg = context.args[0] if context.args else ""
+    if arg in ("उद्या", "tomorrow"):
+        qday = (date.fromisoformat(quiz_day()) + timedelta(days=1)).isoformat()
+    else:
+        qday = norm_date(arg) or quiz_day()
     qs = questions_for_day(qday)
     lines = [f"दिवस {day_number(qday)}  {day_label(qday)}"]
     for i, q in enumerate(qs, 1):
-        lines.append(f"\n{i}. {q['question']}\n   उत्तर {'अबकड'[q['correct']]}. {q['options'][q['correct']]}")
+        tag = " (ठरलेला)" if q.get("date") == qday else ""
+        tag += " (फोटो)" if q.get("image") else ""
+        lines.append(f"\n{i}. {q['question']}{tag}\n   उत्तर {'अबकड'[q['correct']]}. {q['options'][q['correct']]}")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -634,24 +818,413 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
     doc = update.message.document
-    if not doc or not doc.file_name.lower().endswith(".csv"):
+    if not doc:
+        return
+    name = (doc.file_name or "").lower()
+    if not (name.endswith(".csv") or name.endswith(".xlsx")):
         return
     f = await doc.get_file()
-    data = await f.download_as_bytearray()
-    text = bytes(data).decode("utf-8-sig")
+    data = bytes(await f.download_as_bytearray())
+    tmp = os.path.join(DATA_DIR, "upload_tmp" + (".xlsx" if name.endswith(".xlsx") else ".csv"))
+    with open(tmp, "wb") as out:
+        out.write(data)
     try:
-        rows = list(csv.DictReader(io.StringIO(text)))
+        rows = read_rows(tmp)
         need = {"id", "question", "option_a", "option_b", "option_c", "option_d", "correct"}
         if not rows or not need.issubset(set(rows[0].keys())):
-            await update.message.reply_text("CSV मध्ये हे कॉलम हवेत: " + ", ".join(sorted(need)))
+            await update.message.reply_text("फाइलमध्ये हे कॉलम हवेत: " + ", ".join(sorted(need)))
             return
     except Exception as e:
-        await update.message.reply_text(f"CSV वाचता आली नाही: {e}")
+        await update.message.reply_text(f"फाइल वाचता आली नाही: {e}")
         return
-    with open(QUESTIONS_PATH, "w", encoding="utf-8") as out:
-        out.write(text)
+    # always store as CSV
+    with open(QUESTIONS_PATH, "w", encoding="utf-8", newline="") as out:
+        cols = ["id", "category", "question", "option_a", "option_b", "option_c", "option_d",
+                "correct", "explanation", "source", "image"]
+        w = csv.DictWriter(out, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c, "") for c in cols})
     load_questions()
-    await update.message.reply_text(f"प्रश्न साठा बदलला. आता {len(QUESTIONS)} प्रश्न.")
+    bad = len(rows) - len(QUESTIONS)
+    await update.message.reply_text(
+        f"प्रश्न साठा बदलला. आता {len(QUESTIONS)} प्रश्न." + (f" {bad} ओळी चुकीच्या म्हणून वगळल्या." if bad else ""))
+
+
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin photo: if inside /add flow, it becomes the question's image (caption = question text)."""
+    if not is_admin(update):
+        return
+    st = context.user_data.get("add")
+    if st is not None and st.get("step") == "question":
+        st["image"] = update.message.photo[-1].file_id
+        cap = (update.message.caption or "").strip()
+        if cap:
+            st["question"] = cap
+            st["step"] = "a"
+            await update.message.reply_text("फोटो घेतला. आता पर्याय अ लिहा.")
+        else:
+            await update.message.reply_text("फोटो घेतला. आता प्रश्न लिहा.")
+        return
+    await update.message.reply_text("प्रश्न टाकायचा असेल तर आधी /add पाठवा आणि मग फोटो.")
+
+
+# --------------------------------------------------------------------------
+# Admin: add questions directly in Telegram
+# --------------------------------------------------------------------------
+ADD_STEPS = ["question", "a", "b", "c", "d", "correct", "explanation", "confirm"]
+ADD_PROMPTS = {
+    "question": "प्रश्न लिहा. फोटो असेल तर फोटो पाठवा आणि कॅप्शनमध्ये प्रश्न.",
+    "a": "पर्याय अ लिहा.",
+    "b": "पर्याय ब लिहा.",
+    "c": "पर्याय क लिहा.",
+    "d": "पर्याय ड लिहा.",
+    "correct": "बरोबर उत्तर कोणतं.",
+    "explanation": "एका ओळीत स्पष्टीकरण लिहा. नको असेल तर /skip.",
+}
+
+
+def next_qid():
+    return (max([q["id"] for q in QUESTIONS]) + 1) if QUESTIONS else 1
+
+
+def append_question(q):
+    cols = ["id", "category", "question", "option_a", "option_b", "option_c", "option_d",
+            "correct", "explanation", "source", "image"]
+    rows = read_rows(QUESTIONS_PATH) if os.path.exists(QUESTIONS_PATH) else []
+    with open(QUESTIONS_PATH, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c, "") for c in cols})
+        w.writerow({
+            "id": q["id"], "category": q.get("category", ""), "question": q["question"],
+            "option_a": q["options"][0], "option_b": q["options"][1],
+            "option_c": q["options"][2], "option_d": q["options"][3],
+            "correct": "ABCD"[q["correct"]], "explanation": q.get("explanation", ""),
+            "source": q.get("source", ""), "image": q.get("image", ""),
+        })
+    load_questions()
+
+
+def add_preview(st):
+    o = st["options"]
+    return (f"<b>प्रश्न {st['id']}</b>\n{st['question']}\n\n"
+            f"अ. {o[0]}\nब. {o[1]}\nक. {o[2]}\nड. {o[3]}\n\n"
+            f"बरोबर उत्तर <b>{'अबकड'[st['correct']]}</b>\n"
+            + (f"स्पष्टीकरण {st['explanation']}\n" if st.get("explanation") else "")
+            + ("फोटो आहे\n" if st.get("image") else ""))
+
+
+async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A human posts on the channel -> bot shows it to the admin with Send/Skip buttons.
+    Only after the admin presses Send is it copied to every subscriber."""
+    msg = update.channel_post
+    if not msg or not CHANNEL_ID or not ADMIN_IDS:
+        return
+    chan = (msg.chat.username or "").lower()
+    if CHANNEL_ID.lstrip("@").lower() != chan and str(msg.chat.id) != CHANNEL_ID:
+        return
+    if msg.from_user and msg.from_user.id == context.bot.id:
+        return
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("सगळ्यांना पाठवा", callback_data=f"cp_send_{msg.chat.id}_{msg.message_id}"),
+        InlineKeyboardButton("नको", callback_data="cp_skip"),
+    ]])
+    for a in ADMIN_IDS:
+        try:
+            await context.bot.copy_message(a, msg.chat.id, msg.message_id)
+            await context.bot.send_message(a, "ही चॅनलवरची पोस्ट सगळ्या सभासदांना खासगी पाठवायची का.", reply_markup=kb)
+        except Exception as e:
+            log.warning("admin preview failed %s: %s", a, e)
+
+
+async def on_channel_post_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.from_user.id not in ADMIN_IDS:
+        return
+    if q.data == "cp_skip":
+        await q.edit_message_text("ठीक. फक्त चॅनलवर राहिली.")
+        return
+    _, _, chat_id, message_id = q.data.split("_", 3)
+    await q.edit_message_text("पाठवतोय.")
+    with db() as con:
+        users = con.execute("SELECT user_id FROM users WHERE remind=1").fetchall()
+    n = 0
+    for u in users:
+        try:
+            await context.bot.copy_message(u["user_id"], int(chat_id), int(message_id))
+            n += 1
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+        except Forbidden:
+            with db() as con:
+                con.execute("UPDATE users SET remind=0 WHERE user_id=?", (u["user_id"],))
+        except Exception as e:
+            log.warning("copy to %s failed: %s", u["user_id"], e)
+        await asyncio.sleep(0.05)
+    await q.edit_message_text(f"चॅनलवरची पोस्ट {n} जणांना खासगी पाठवली.")
+
+
+async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: pull the Google Sheet now."""
+    if not is_admin(update):
+        return
+    if not SHEET_URL:
+        await update.message.reply_text("SHEET_URL सेट केलेली नाही. .env मध्ये SHEET_URL टाका.")
+        return
+    r = await asyncio.to_thread(sync_sheet)
+    if r == "changed":
+        await update.message.reply_text(f"शीटमधून नवे प्रश्न घेतले. आता {len(QUESTIONS)} प्रश्न.")
+    elif r == "same":
+        await update.message.reply_text(f"शीटमध्ये बदल नाही. {len(QUESTIONS)} प्रश्न.")
+    else:
+        await update.message.reply_text(f"शीट वाचता आली नाही. {r}")
+
+
+async def job_sync(context: ContextTypes.DEFAULT_TYPE):
+    r = await asyncio.to_thread(sync_sheet)
+    if r == "changed":
+        log.info("sheet synced: %d questions", len(QUESTIONS))
+        for a in ADMIN_IDS:
+            await safe_send(context.bot, a, f"शीटमधले बदल घेतले. आता {len(QUESTIONS)} प्रश्न.")
+    elif r.startswith("error"):
+        log.warning("sheet sync %s", r)
+
+
+def next_extra_id():
+    with db() as con:
+        r = con.execute("SELECT MAX(id) FROM extra_questions").fetchone()[0]
+    return max(100000, (r or 0) + 1)
+
+
+def save_extra(st, qdate):
+    with db() as con:
+        con.execute(
+            "INSERT INTO extra_questions(id,category,question,option_a,option_b,option_c,option_d,correct,explanation,image,qdate,created) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (st["id"], st.get("category", ""), st["question"], *st["options"], st["correct"],
+             st.get("explanation", ""), st.get("image", ""), qdate or "", now().isoformat()))
+
+
+async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+    if SHEET_URL:
+        await update.message.reply_text(
+            "प्रश्न Google Sheet मधून येतात. शीटमध्ये नवी ओळ लिहा. ठराविक दिवशी हवा असेल तर date कॉलममध्ये तारीख. "
+            "फोटो असेल तर image कॉलममध्ये Drive लिंक. दहा मिनिटांत बॉट घेतो किंवा /sync ने लगेच.\n" + SHEET_URL)
+        return
+    context.user_data["add"] = {"step": "question", "options": ["", "", "", ""], "image": "",
+                                "explanation": "", "id": next_extra_id(),
+                                "category": " ".join(context.args) if context.args else ""}
+    await update.message.reply_text(
+        "नवा प्रश्न. कधीही थांबायचं असेल तर /cancel.\n\n" + ADD_PROMPTS["question"])
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("add", None) is not None:
+        await update.message.reply_text("रद्द केलं.")
+
+
+async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st = context.user_data.get("add")
+    if st and st["step"] == "explanation":
+        st["explanation"] = ""
+        st["step"] = "confirm"
+        await send_add_confirm(update.message, st)
+
+
+async def send_add_confirm(message, st):
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("जतन करा", callback_data="add_save"),
+                                InlineKeyboardButton("रद्द", callback_data="add_cancel")]])
+    await message.reply_text(add_preview(st), parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def on_add_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Plain text from admin while in /add flow."""
+    st = context.user_data.get("add")
+    if st is None or not is_admin(update):
+        return
+    text = (update.message.text or "").strip()
+    if not text or text.startswith("/"):
+        return
+    step = st["step"]
+    if step == "question":
+        st["question"] = text
+        st["step"] = "a"
+    elif step in ("a", "b", "c", "d"):
+        st["options"]["abcd".index(step)] = text
+        st["step"] = ADD_STEPS[ADD_STEPS.index(step) + 1]
+    elif step == "correct":
+        m = {"a": 0, "b": 1, "c": 2, "d": 3, "अ": 0, "ब": 1, "क": 2, "ड": 3}
+        k = text.lower()[:1]
+        if k not in m:
+            await update.message.reply_text("फक्त अ ब क ड यापैकी एक अक्षर लिहा किंवा बटण दाबा.")
+            return
+        st["correct"] = m[k]
+        st["step"] = "explanation"
+    elif step == "explanation":
+        st["explanation"] = text[:200]
+        st["step"] = "confirm"
+    elif step == "date":
+        d = norm_date(text)
+        if not d:
+            await update.message.reply_text("तारीख समजली नाही. 2026-11-05 अशी लिहा.")
+            return
+        class _Q:  # small shim so finish_add can reuse edit/reply
+            message = update.message
+            async def edit_message_text(self, *a, **k):
+                await update.message.reply_text(*a, **k)
+        await finish_add(_Q(), context, st, d)
+        return
+    else:
+        return
+    step = st["step"]
+    if step == "correct":
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(x, callback_data=f"add_c_{i}") for i, x in enumerate("अबकड")]])
+        await update.message.reply_text(ADD_PROMPTS["correct"], reply_markup=kb)
+    elif step == "confirm":
+        await send_add_confirm(update.message, st)
+    else:
+        await update.message.reply_text(ADD_PROMPTS[step])
+
+
+async def on_add_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    st = context.user_data.get("add")
+    data = q.data
+    if st is None:
+        await q.edit_message_text("हा प्रश्न आधीच संपला आहे. नवा प्रश्न /add ने.")
+        return
+    if data.startswith("add_c_"):
+        st["correct"] = int(data[-1])
+        st["step"] = "explanation"
+        await q.edit_message_text(f"बरोबर उत्तर {'अबकड'[st['correct']]}.")
+        await q.message.reply_text(ADD_PROMPTS["explanation"])
+    elif data == "add_save":
+        st["step"] = "when"
+        tomorrow = (date.fromisoformat(quiz_day()) + timedelta(days=1)).isoformat()
+        st["tomorrow"] = tomorrow
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"उद्या {day_label(tomorrow)}", callback_data="add_when_tomorrow")],
+            [InlineKeyboardButton("ठराविक तारीख", callback_data="add_when_date")],
+            [InlineKeyboardButton("साठ्यात शेवटी", callback_data="add_when_pool")],
+        ])
+        await q.edit_message_text(add_preview(st) + "\nहा प्रश्न कधी द्यायचा.", parse_mode=ParseMode.HTML, reply_markup=kb)
+    elif data == "add_when_tomorrow":
+        await finish_add(q, context, st, st["tomorrow"])
+    elif data == "add_when_pool":
+        await finish_add(q, context, st, "")
+    elif data == "add_when_date":
+        st["step"] = "date"
+        await q.edit_message_text("तारीख लिहा. उदाहरण 2026-11-05 किंवा 05-11-2026.")
+    elif data == "add_cancel":
+        context.user_data.pop("add", None)
+        await q.edit_message_text("रद्द केलं.")
+
+
+async def finish_add(q, context, st, qdate):
+    st["id"] = next_extra_id()
+    save_extra(st, qdate)
+    context.user_data.pop("add", None)
+    if qdate:
+        cnt = len(extra_questions(qdate)) + len([x for x in QUESTIONS if x.get("date") == qdate])
+        msg = f"जतन झाला. {day_label(qdate)} साठी आता {cnt} प्रश्न ठरले आहेत."
+        if cnt < QUESTIONS_PER_DAY:
+            msg += f" उरलेले {QUESTIONS_PER_DAY - cnt} नेहमीच्या साठ्यातून येतील."
+        elif cnt > QUESTIONS_PER_DAY:
+            msg += f" पहिले {QUESTIONS_PER_DAY} जातील."
+    else:
+        msg = "जतन झाला. साठ्यात शेवटी जोडला."
+    try:
+        await q.edit_message_text(add_preview(st) + "\n" + msg, parse_mode=ParseMode.HTML)
+    except BadRequest:
+        await q.message.reply_text(msg)
+    await q.message.reply_text("पुढचा प्रश्न /add. उद्याचे बघायचे असतील तर /preview " + (qdate or ""))
+
+
+async def cmd_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: how many questions, how many days they last, last 5 added."""
+    if not is_admin(update):
+        return
+    pool = [q for q in QUESTIONS if not q.get("date")] + extra_questions(None)
+    n = len(pool)
+    today = date.fromisoformat(quiz_day())
+    lines = [f"साठ्यात {n} प्रश्न. पुरतील {n // QUESTIONS_PER_DAY} दिवस.",
+             f"शीटमधून {len(QUESTIONS)}. टेलिग्राममधून {len(extra_questions(None))}."]
+    with db() as con:
+        dated = con.execute(
+            "SELECT qdate, COUNT(*) c FROM extra_questions WHERE qdate>=? GROUP BY qdate ORDER BY qdate LIMIT 10",
+            (today.isoformat(),)).fetchall()
+    sheet_dated = {}
+    for q in QUESTIONS:
+        if q.get("date") and q["date"] >= today.isoformat():
+            sheet_dated[q["date"]] = sheet_dated.get(q["date"], 0) + 1
+    days = {}
+    for r in dated:
+        days[r["qdate"]] = days.get(r["qdate"], 0) + r["c"]
+    for k, v in sheet_dated.items():
+        days[k] = days.get(k, 0) + v
+    if days:
+        lines.append("\nतारखेसाठी ठरलेले")
+        for k in sorted(days)[:10]:
+            lines.append(f"{day_label(k)}  {days[k]} प्रश्न")
+    lines.append("\nशेवटचे पाच")
+    for q in pool[-5:]:
+        lines.append(f"{q['id']}. {q['question'][:60]}")
+    lines.append("\n/add नवा प्रश्न. /del नंबर काढा. /preview तारीख त्या दिवसाचे बघा.")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update) or not context.args:
+        return
+    try:
+        qid = int(context.args[0])
+    except ValueError:
+        return
+    if qid >= 100000:
+        with db() as con:
+            con.execute("DELETE FROM extra_questions WHERE id=?", (qid,))
+        await update.message.reply_text(f"प्रश्न {qid} काढला.")
+        return
+    if SHEET_URL:
+        await update.message.reply_text("हा प्रश्न Google Sheet मधला आहे. शीटमधली ती ओळ काढा. दहा मिनिटांत बॉट घेतो किंवा /sync.")
+        return
+    rows = [r for r in read_rows(QUESTIONS_PATH) if str(r.get("id", "")).strip() != str(qid)]
+    cols = ["id", "category", "question", "option_a", "option_b", "option_c", "option_d",
+            "correct", "explanation", "source", "image"]
+    with open(QUESTIONS_PATH, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c, "") for c in cols})
+    load_questions()
+    await update.message.reply_text(f"प्रश्न {qid} काढला. आता {len(QUESTIONS)} प्रश्न.")
+
+
+async def cmd_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /show 12  shows question 12 in full."""
+    if not is_admin(update) or not context.args:
+        return
+    try:
+        q = qbyid(int(context.args[0]))
+    except ValueError:
+        q = None
+    if not q:
+        await update.message.reply_text("असा प्रश्न नाही.")
+        return
+    st = {"id": q["id"], "question": q["question"], "options": q["options"], "correct": q["correct"],
+          "explanation": q["explanation"], "image": q["image"]}
+    if q["image"]:
+        try:
+            await update.message.reply_photo(q["image"])
+        except Exception:
+            pass
+    await update.message.reply_text(add_preview(st), parse_mode=ParseMode.HTML)
 
 
 # --------------------------------------------------------------------------
@@ -743,6 +1316,8 @@ async def post_init(app: Application):
     jq.run_daily(job_morning_push, time(QUIZ_HOUR, 1, tzinfo=TZ), name="morning_push")
     jq.run_daily(job_reminder, time(REMIND_HOUR, 0, tzinfo=TZ), name="reminder")
     jq.run_daily(job_evening, time(RESULT_HOUR, 0, tzinfo=TZ), name="evening")
+    if SHEET_URL:
+        jq.run_repeating(job_sync, interval=SHEET_SYNC_MINUTES * 60, first=5, name="sheet_sync")
     log.info("jobs scheduled; questions=%d; channel=%s; admins=%s", len(QUESTIONS), CHANNEL_ID, ADMIN_IDS)
 
 
@@ -759,6 +1334,17 @@ def main():
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("preview", cmd_preview))
     app.add_handler(CommandHandler("post", cmd_post))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.UpdateType.CHANNEL_POST, on_channel_post))
+    app.add_handler(CallbackQueryHandler(on_channel_post_button, pattern="^cp_"))
+    app.add_handler(CommandHandler("sync", cmd_sync))
+    app.add_handler(CommandHandler("add", cmd_add))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("skip", cmd_skip))
+    app.add_handler(CommandHandler("bank", cmd_bank))
+    app.add_handler(CommandHandler("del", cmd_del))
+    app.add_handler(CommandHandler("show", cmd_show))
+    app.add_handler(CallbackQueryHandler(on_add_button, pattern="^add_"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_add_text))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("export", cmd_export))
@@ -766,6 +1352,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_top_month, pattern="^top_month$"))
     app.add_handler(PollAnswerHandler(on_poll_answer))
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, on_document))
+    app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, on_photo))
     log.info("starting polling")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
