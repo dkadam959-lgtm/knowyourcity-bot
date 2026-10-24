@@ -51,6 +51,8 @@ REMIND_HOUR = int(os.environ.get("REMIND_HOUR", "15"))   # reminder 15:00
 RESULT_HOUR = int(os.environ.get("RESULT_HOUR", "21"))   # answers 21:00
 
 QUESTIONS_PER_DAY = 5
+# one question from each of these five themes every day, in this order
+CATEGORIES = ["वारसा", "पर्यावरण", "शहर", "पायाभूत सुविधा", "सामान्य ज्ञान"]
 POINTS_CORRECT = 10
 POLL_OPEN_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))   # question closes after this
 SPEED_BONUS = [(10, 5), (20, 3), (30, 1)]   # (within seconds, bonus points)
@@ -94,7 +96,8 @@ def init_db():
                 remind INTEGER DEFAULT 1,
                 referred_by INTEGER,
                 referral_paid INTEGER DEFAULT 0,
-                bonus INTEGER DEFAULT 0
+                bonus INTEGER DEFAULT 0,
+                display_name TEXT
             );
             CREATE TABLE IF NOT EXISTS polls (
                 poll_id TEXT PRIMARY KEY,
@@ -108,6 +111,26 @@ def init_db():
                 PRIMARY KEY (user_id, qday, qid)
             );
             CREATE INDEX IF NOT EXISTS idx_answers_day ON answers(qday);
+            """
+        )
+        for col in ("display_name TEXT", "area TEXT", "profession TEXT", "birth_year INTEGER"):
+            try:
+                con.execute(f"ALTER TABLE users ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS bonuses (
+                user_id INTEGER, qday TEXT, kind TEXT, points INTEGER,
+                PRIMARY KEY (user_id, qday, kind)
+            );
+            CREATE TABLE IF NOT EXISTS day_questions (
+                qday TEXT, position INTEGER, qid INTEGER,
+                PRIMARY KEY (qday, position)
+            );
+            CREATE TABLE IF NOT EXISTS results_sent (
+                user_id INTEGER, qday TEXT, PRIMARY KEY (user_id, qday)
+            );
             CREATE TABLE IF NOT EXISTS extra_questions (
                 id INTEGER PRIMARY KEY,
                 category TEXT, question TEXT,
@@ -140,6 +163,10 @@ def read_rows(path):
             d = {}
             for h, v in zip(header, row):
                 if h:
+                    if isinstance(v, datetime):
+                        v = v.date().isoformat()
+                    elif isinstance(v, date):
+                        v = v.isoformat()
                     d[h] = "" if v is None else (str(int(v)) if isinstance(v, float) and v.is_integer() else str(v))
             out.append(d)
         return out
@@ -219,10 +246,17 @@ def image_bytes(img: str):
     if img.startswith("http"):
         key = hashlib.md5(img.encode()).hexdigest()[:16] + ".img"
         path = os.path.join(DATA_DIR, "images", key)
+        bad = path + ".bad"
+        if os.path.exists(bad):
+            raise ValueError("image link failed earlier")
         if not os.path.exists(path):
-            data = fetch_url(drive_direct(img), timeout=60)
-            if data[:1] == b"<":
-                raise ValueError("image link is not public")
+            try:
+                data = fetch_url(drive_direct(img), timeout=30)
+                if data[:1] == b"<" or len(data) < 100:
+                    raise ValueError("image link is not public")
+            except Exception:
+                open(bad, "w").close()
+                raise
             with open(path, "wb") as f:
                 f.write(data)
         return path
@@ -295,6 +329,26 @@ def quiz_day(dt=None) -> str:
 
 
 def questions_for_day(qday: str):
+    """The day's 5 questions. Frozen the first time they are asked for, so a sheet
+    change later in the day cannot shift the set. Cleared with /refreeze."""
+    with db() as con:
+        rows = con.execute("SELECT qid FROM day_questions WHERE qday=? ORDER BY position", (qday,)).fetchall()
+    if rows:
+        out = [qbyid(r["qid"]) for r in rows]
+        out = [q for q in out if q]
+        if len(out) == len(rows):
+            return out
+    out = compute_questions_for_day(qday)
+    today = quiz_day()
+    if out and qday <= today:   # freeze only today and past; future days stay live
+        with db() as con:
+            con.execute("DELETE FROM day_questions WHERE qday=?", (qday,))
+            con.executemany("INSERT INTO day_questions(qday,position,qid) VALUES(?,?,?)",
+                            [(qday, i, q["id"]) for i, q in enumerate(out)])
+    return out
+
+
+def compute_questions_for_day(qday: str):
     """Dated questions for that day first (Telegram /add with a date, or sheet 'date' column).
     If fewer than 5, the rest come from the rotation over the undated pool."""
     dated = extra_questions(qday) + [q for q in QUESTIONS if q.get("date") == qday]
@@ -305,7 +359,22 @@ def questions_for_day(qday: str):
     if not pool:
         return out
     d = date.fromisoformat(qday)
-    idx = max(0, (d - START_DATE).days)
+    idx = (d - START_DATE).days          # negative before launch is fine: still rotates daily
+    # frame: one question per theme, each theme rotating through its own list
+    by_cat = {c: [q for q in pool if q["category"] == c] for c in CATEGORIES}
+    if all(by_cat[c] for c in CATEGORIES):
+        taken = {q["id"] for q in out}
+        for c in CATEGORIES:
+            if len(out) >= QUESTIONS_PER_DAY:
+                break
+            lst = by_cat[c]
+            for k in range(len(lst)):
+                q = lst[(idx + k) % len(lst)]
+                if q["id"] not in taken:
+                    out.append(q); taken.add(q["id"])
+                    break
+        if len(out) >= QUESTIONS_PER_DAY:
+            return out
     n = len(pool)
     start = (idx * QUESTIONS_PER_DAY) % n
     i = 0
@@ -344,13 +413,25 @@ def day_number(qday: str):
 
 
 def mention(user_id, name):
-    safe = (name or "सभासद").replace("<", "").replace(">", "")
-    return f'<a href="tg://user?id={user_id}">{safe}</a>'
+    """Kept for compatibility. Names are shown as plain text, never as a link to the account."""
+    return (name or "सभासद").replace("<", "").replace(">", "")
 
 
-def leaderboard(period: str, limit=10):
+def shown_name(row):
+    """Display name chosen by the user, else their Telegram first name. Plain text, no link."""
+    n = (row["display_name"] if "display_name" in row.keys() and row["display_name"] else row["name"]) or "सभासद"
+    return n.replace("<", "").replace(">", "")[:30]
+
+
+def get_display_name(user_id):
+    with db() as con:
+        r = con.execute("SELECT display_name FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return r["display_name"] if r and r["display_name"] else ""
+
+
+def leaderboard(period: str, limit=10, qday=None):
     """period: day | week | month. Returns list of (user_id, name, points, seconds)."""
-    today = date.fromisoformat(quiz_day())
+    today = date.fromisoformat(qday or quiz_day())
     if period == "day":
         lo = hi = today
     elif period == "week":
@@ -362,8 +443,9 @@ def leaderboard(period: str, limit=10):
     with db() as con:
         rows = con.execute(
             """
-            SELECT a.user_id, u.name,
-                   SUM(a.points) + CASE WHEN ?='day' THEN 0 ELSE COALESCE(u.bonus,0) END AS pts,
+            SELECT a.user_id, u.name, u.display_name,
+                   SUM(a.points) + CASE WHEN ?='day' THEN 0 ELSE
+                     COALESCE((SELECT SUM(b.points) FROM bonuses b WHERE b.user_id=a.user_id AND b.qday BETWEEN ? AND ?),0) END AS pts,
                    SUM(a.seconds) AS secs
             FROM answers a JOIN users u ON u.user_id=a.user_id
             WHERE a.qday BETWEEN ? AND ?
@@ -371,12 +453,12 @@ def leaderboard(period: str, limit=10):
             ORDER BY pts DESC, secs ASC
             LIMIT ?
             """,
-            (period, lo.isoformat(), hi.isoformat(), limit),
+            (period, lo.isoformat(), hi.isoformat(), lo.isoformat(), hi.isoformat(), limit),
         ).fetchall()
     return rows
 
 
-def user_rank_today(user_id):
+def user_rank_today(user_id, qday=None):
     with db() as con:
         rows = con.execute(
             """
@@ -384,7 +466,7 @@ def user_rank_today(user_id):
             FROM answers WHERE qday=?
             GROUP BY user_id ORDER BY pts DESC, secs ASC
             """,
-            (quiz_day(),),
+            (qday or quiz_day(),),
         ).fetchall()
     for i, r in enumerate(rows, 1):
         if r["user_id"] == user_id:
@@ -428,21 +510,39 @@ async def safe_send(bot, chat_id, text, **kw):
 # --------------------------------------------------------------------------
 # Quiz flow
 # --------------------------------------------------------------------------
-async def send_next_question(context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    qday = quiz_day()
+def quiz_open_now() -> bool:
+    """Quiz runs from QUIZ_HOUR to RESULT_HOUR (answers go to the channel at RESULT_HOUR)."""
+    h = now().hour
+    return QUIZ_HOUR <= h < RESULT_HOUR
+
+
+async def send_next_question(context: ContextTypes.DEFAULT_TYPE, user_id: int, qday: str = None):
+    qday = qday or quiz_day()
+    with db() as con:
+        open_poll = con.execute(
+            "SELECT 1 FROM polls WHERE user_id=? AND qday=? AND answered=0", (user_id, qday)).fetchone()
+        sent_ids = [r["qid"] for r in con.execute(
+            "SELECT qid FROM polls WHERE user_id=? AND qday=?", (user_id, qday)).fetchall()]
+    if open_poll:
+        return          # a question is already waiting for this user
     qs = questions_for_day(qday)
-    idx = sent_count(user_id, qday)
-    if idx >= len(qs):
-        await send_result(context, user_id)
+    remaining = [q for q in qs if q["id"] not in sent_ids]
+    if not remaining:
+        await send_result(context, user_id, qday)
         return
-    q = qs[idx]
+    if qday == quiz_day() and not quiz_open_now():
+        await safe_send(context.bot, user_id,
+                        f"आजची स्पर्धा रात्री {RESULT_HOUR} वाजता संपली. उद्या सकाळी {QUIZ_HOUR} वाजता पुढचे प्रश्न.")
+        return
+    q = remaining[0]
+    idx = len(sent_ids)
     expl = q["explanation"]
     if q["source"]:
         expl = (expl + "\nस्रोत " + q["source"]).strip()
     if q.get("image"):
         try:
             img = q["image"]
-            path = image_bytes(img) if (img.startswith("http") or "." in img) else None
+            path = await asyncio.to_thread(image_bytes, img) if (img.startswith("http") or "." in img) else None
             if path:
                 with open(path, "rb") as fh:
                     await context.bot.send_photo(user_id, fh, caption=f"प्रश्न {idx + 1} साठी फोटो")
@@ -464,6 +564,17 @@ async def send_next_question(context: ContextTypes.DEFAULT_TYPE, user_id: int):
             open_period=POLL_OPEN_SECONDS,
         )
     except Forbidden:
+        return
+    except BadRequest as e:
+        log.error("send_poll failed for q%s: %s", q["id"], e)
+        with db() as con:   # skip this question for this user so they are not stuck
+            con.execute("INSERT OR REPLACE INTO polls(poll_id,user_id,qday,qid,qindex,sent_ts,answered) VALUES(?,?,?,?,?,?,1)",
+                        (f"bad_{user_id}_{q['id']}", user_id, qday, q["id"], idx, now().timestamp()))
+            con.execute("INSERT OR REPLACE INTO answers(user_id,qday,qid,correct,seconds,points,ts) VALUES(?,?,?,?,?,?,?)",
+                        (user_id, qday, q["id"], 0, 0, 0, now().isoformat()))
+        for a in ADMIN_IDS:
+            await safe_send(context.bot, a, f"प्रश्न {q['id']} टेलिग्रामने नाकारला. {e}. प्रश्न ३०० आणि पर्याय १०० अक्षरांच्या आत हवेत.")
+        await send_next_question(context, user_id, qday)
         return
     with db() as con:
         con.execute(
@@ -490,8 +601,7 @@ async def job_poll_timeout(context: ContextTypes.DEFAULT_TYPE):
             (d["user_id"], d["qday"], d["qid"], 0, POLL_OPEN_SECONDS, 0, now().isoformat()),
         )
     await safe_send(context.bot, d["user_id"], "वेळ संपली. हा प्रश्न ० गुण. पुढचा प्रश्न येतोय.")
-    await asyncio.sleep(0.8)
-    await send_next_question(context, d["user_id"])
+    await send_next_question(context, d["user_id"], d["qday"])
 
 
 def streak_days(user_id) -> int:
@@ -539,34 +649,45 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for j in context.job_queue.get_jobs_by_name(f"timeout_{pa.poll_id}"):
         j.schedule_removal()
     # referral bonus when a referred user finishes their first full day
-    await maybe_pay_referral(context, user.id)
-    await asyncio.sleep(0.8)
-    await send_next_question(context, user.id)
+    await maybe_pay_referral(context, user.id, p["qday"])
+    await send_next_question(context, user.id, p["qday"])
 
 
-async def maybe_pay_referral(context, user_id):
+def add_bonus(user_id, qday, kind, points) -> bool:
+    """One bonus of each kind per user per day. Returns True if newly added."""
+    with db() as con:
+        cur = con.execute("INSERT OR IGNORE INTO bonuses(user_id,qday,kind,points) VALUES(?,?,?,?)",
+                          (user_id, qday, kind, points))
+        return cur.rowcount > 0
+
+
+async def maybe_pay_referral(context, user_id, qday=None):
+    qday = qday or quiz_day()
     with db() as con:
         u = con.execute("SELECT referred_by, referral_paid FROM users WHERE user_id=?", (user_id,)).fetchone()
         if not u or not u["referred_by"] or u["referral_paid"]:
             return
-        if answered_count(user_id, quiz_day()) < QUESTIONS_PER_DAY:
+        if answered_count(user_id, qday) < QUESTIONS_PER_DAY:
             return
         con.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (user_id,))
-        con.execute("UPDATE users SET bonus=COALESCE(bonus,0)+? WHERE user_id=?", (REFERRAL_BONUS, u["referred_by"]))
+    add_bonus(u["referred_by"], qday, f"ref_{user_id}", REFERRAL_BONUS)
     await safe_send(context.bot, u["referred_by"],
                     f"तुमच्या आमंत्रणाने आलेल्या मित्राने आजची स्पर्धा पूर्ण केली. तुम्हाला {REFERRAL_BONUS} बोनस गुण मिळाले.")
 
 
-async def send_result(context, user_id):
-    rank, pts, secs, total = user_rank_today(user_id)
-    top = leaderboard("day", 3)
+async def send_result(context, user_id, qday=None):
+    qday = qday or quiz_day()
+    with db() as con:
+        cur = con.execute("INSERT OR IGNORE INTO results_sent(user_id,qday) VALUES(?,?)", (user_id, qday))
+        if cur.rowcount == 0:
+            return      # result for this day already sent once
+    rank, pts, secs, total = user_rank_today(user_id, qday)
+    top = leaderboard("day", 3, qday)
     streak = streak_days(user_id)
     streak_line = f"सलग दिवस <b>{streak}</b>"
-    if streak and streak % STREAK_BONUS_DAYS == 0:
-        with db() as con:
-            con.execute("UPDATE users SET bonus=COALESCE(bonus,0)+? WHERE user_id=?", (STREAK_BONUS, user_id))
+    if streak and streak % STREAK_BONUS_DAYS == 0 and add_bonus(user_id, qday, "streak", STREAK_BONUS):
         streak_line += f"  सलग {streak} दिवसांचा बोनस {STREAK_BONUS} गुण"
-    lines = [f"<b>आजचा निकाल</b>  दिवस {day_number(quiz_day())}",
+    lines = [f"<b>आजचा निकाल</b>  दिवस {day_number(qday)}",
              f"गुण <b>{pts}</b> / {QUESTIONS_PER_DAY * (POINTS_CORRECT + SPEED_BONUS[0][1])}",
              f"वेळ {secs:.0f} सेकंद",
              f"आजचा नंबर <b>{rank}</b> ({total} खेळाडूंमध्ये)",
@@ -574,13 +695,13 @@ async def send_result(context, user_id):
     if top:
         lines.append("आजचे आघाडीवर")
         for i, r in enumerate(top, 1):
-            lines.append(f"{i}. {mention(r['user_id'], r['name'])}  {r['pts']}")
+            lines.append(f"{i}. {shown_name(r)}  {r['pts']}")
     lines += ["", f"उत्तरं आणि विजेते रात्री {RESULT_HOUR} वाजता चॅनलवर.",
-              f"मित्राला आमंत्रण द्या आणि {REFERRAL_BONUS} बोनस गुण मिळवा."]
-    me = await context.bot.get_me()
+              f"मित्राला आमंत्रण द्या आणि {REFERRAL_BONUS} बोनस गुण मिळवा.",
+              "यादीतलं तुमचं नाव बदलायचं असेल तर /name."]
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("मित्राला पाठवा",
-                              url=f"https://t.me/share/url?url=https://t.me/{me.username}?start=ref_{user_id}&text=रोज%205%20प्रश्न.%20तुमचं%20शहर%20किती%20ओळखता%3F")],
+                              url=f"https://t.me/share/url?url=https://t.me/{context.bot.username}?start=ref_{user_id}&text=रोज%205%20प्रश्न.%20तुमचं%20शहर%20किती%20ओळखता%3F")],
         [InlineKeyboardButton("माझा महिन्याचा हिशेब", callback_data="top_month")],
     ])
     await safe_send(context.bot, user_id, "\n".join(lines), reply_markup=kb)
@@ -616,20 +737,152 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"नमस्कार {user.first_name}. आजची स्पर्धा तुम्ही पूर्ण केली आहे. उद्या सकाळी {QUIZ_HOUR} वाजता पुढचे प्रश्न येतील.\n/score माझे गुण  /top आजची यादी")
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
     text = (f"नमस्कार {user.first_name}. <b>Know Your City</b> मध्ये स्वागत.\n\n"
             f"रोज सकाळी {QUIZ_HOUR} वाजता तुमच्या शहराबद्दल {QUESTIONS_PER_DAY} प्रश्न. "
             f"बरोबर उत्तराला {POINTS_CORRECT} गुण आणि वेगाचा बोनस {SPEED_BONUS[0][1]} पर्यंत. "
             f"रोज आठवड्याला आणि महिन्याला विजेते जाहीर होतात.\n\n"
-            + (f"{SPONSOR_TEXT}\n\n" if SPONSOR_TEXT else "")
-            + "तयार असाल तर खालचं बटण दाबा.")
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            + (f"{SPONSOR_TEXT}\n\n" if SPONSOR_TEXT else ""))
+    if not profile_complete(user.id):
+        await update.message.reply_text(text + "सुरू करण्यापूर्वी चार छोट्या गोष्टी.", parse_mode=ParseMode.HTML)
+        await ask_next_profile_step(update.message, context, user.id)
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
+    await update.message.reply_text(text + "तयार असाल तर खालचं बटण दाबा.", parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+# --------------------------------------------------------------------------
+# Onboarding profile: name, area, profession, birth year (asked once)
+# --------------------------------------------------------------------------
+PROFILE_STEPS = [
+    ("display_name", "तुमचं नाव काय. हेच नाव विजेत्यांच्या यादीत दिसेल."),
+    ("area", "तुम्ही कुठे राहता. भाग किंवा गाव. उदाहरण कोथरूड किंवा बारामती."),
+    ("profession", "तुम्ही काय करता. उदाहरण विद्यार्थी. शिक्षक. व्यवसाय. नोकरी. गृहिणी. शेती."),
+    ("birth_year", "तुमचं जन्मवर्ष. फक्त चार अंक. उदाहरण 1995."),
+]
+
+
+def profile_complete(user_id) -> bool:
+    with db() as con:
+        r = con.execute("SELECT display_name, area, profession, birth_year FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return bool(r and r["display_name"] and r["area"] and r["profession"] and r["birth_year"])
+
+
+def next_profile_field(user_id):
+    with db() as con:
+        r = con.execute("SELECT display_name, area, profession, birth_year FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if not r:
+        return PROFILE_STEPS[0]
+    for field, prompt in PROFILE_STEPS:
+        if not r[field]:
+            return (field, prompt)
+    return None
+
+
+async def ask_next_profile_step(message, context, user_id):
+    step = next_profile_field(user_id)
+    if step is None:
+        context.user_data.pop("profile_field", None)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
+        if answered_count(user_id, quiz_day()) >= QUESTIONS_PER_DAY:
+            await message.reply_text("धन्यवाद. माहिती नोंदवली.")
+        else:
+            await message.reply_text("धन्यवाद. आता खालचं बटण दाबा.", reply_markup=kb)
+        return
+    field, prompt = step
+    context.user_data["profile_field"] = field
+    if field == "profession":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("विद्यार्थी", callback_data="prof_विद्यार्थी"), InlineKeyboardButton("नोकरी", callback_data="prof_नोकरी")],
+            [InlineKeyboardButton("व्यवसाय", callback_data="prof_व्यवसाय"), InlineKeyboardButton("शेती", callback_data="prof_शेती")],
+            [InlineKeyboardButton("गृहिणी", callback_data="prof_गृहिणी"), InlineKeyboardButton("शिक्षक", callback_data="prof_शिक्षक")],
+            [InlineKeyboardButton("निवृत्त", callback_data="prof_निवृत्त"), InlineKeyboardButton("इतर", callback_data="prof_इतर")],
+        ])
+        await message.reply_text(prompt + " बटण दाबा किंवा लिहा.", reply_markup=kb)
+    else:
+        await message.reply_text(prompt)
+
+
+async def save_profile_value(update: Update, context, user_id, field, value, message):
+    value = value.strip().replace("<", "").replace(">", "")
+    if field == "birth_year":
+        digits = "".join(ch for ch in value if ch.isdigit())
+        digits = digits.translate(str.maketrans("०१२३४५६७८९", "0123456789"))
+        if len(digits) != 4 or not (1920 <= int(digits) <= now().year - 5):
+            await message.reply_text("जन्मवर्ष चार अंकात लिहा. उदाहरण 1995.")
+            return False
+        value = int(digits)
+    else:
+        if len(value) < 2 or value.startswith("/"):
+            await message.reply_text("किमान दोन अक्षरं लिहा.")
+            return False
+        value = value[:40]
+    with db() as con:
+        con.execute(f"UPDATE users SET {field}=? WHERE user_id=?", (value, user_id))
+    return True
+
+
+async def on_profession_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    prof = q.data[len("prof_"):]
+    with db() as con:
+        con.execute("UPDATE users SET profession=? WHERE user_id=?", (prof, q.from_user.id))
+    try:
+        await q.edit_message_text(f"व्यवसाय {prof}.")
+    except BadRequest:
+        pass
+    await ask_next_profile_step(q.message, context, q.from_user.id)
+
+
+async def cmd_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new = " ".join(context.args).strip() if context.args else ""
+    if new:
+        await set_display_name(update, context, new)
+    else:
+        context.user_data["await_name"] = True
+        cur = get_display_name(update.effective_user.id)
+        await update.message.reply_text(
+            (f"सध्याचं नाव {cur}. " if cur else "") + "यादीत दाखवायचं नवं नाव लिहून पाठवा.")
+
+
+async def set_display_name(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str):
+    name = name.strip().replace("<", "").replace(">", "")[:30]
+    if len(name) < 2 or name.startswith("/"):
+        await update.message.reply_text("नाव किमान दोन अक्षरांचं हवं. पुन्हा लिहा.")
+        return
+    with db() as con:
+        con.execute("UPDATE users SET display_name=? WHERE user_id=?", (name, update.effective_user.id))
+    context.user_data.pop("await_name", None)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
+    if answered_count(update.effective_user.id, quiz_day()) >= QUESTIONS_PER_DAY:
+        await update.message.reply_text(f"ठीक. यादीत {name} असं दिसेल.")
+    else:
+        await update.message.reply_text(f"ठीक. यादीत {name} असं दिसेल. तयार असाल तर खालचं बटण दाबा.", reply_markup=kb)
+
+
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Plain text router: name entry first, then the admin /add flow."""
+    if context.user_data.get("add") is not None:
+        await on_add_text(update, context)
+        return
+    field = context.user_data.get("profile_field")
+    if field:
+        ok = await save_profile_value(update, context, update.effective_user.id, field, update.message.text or "", update.message)
+        if ok:
+            await ask_next_profile_step(update.message, context, update.effective_user.id)
+        return
+    if context.user_data.get("await_name"):
+        await set_display_name(update, context, update.message.text or "")
+        return
 
 
 async def on_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     user_id = q.from_user.id
+    if not profile_complete(user_id):
+        await ask_next_profile_step(q.message, context, user_id)
+        return
     if answered_count(user_id, quiz_day()) >= QUESTIONS_PER_DAY:
         await q.edit_message_text("आजची स्पर्धा तुम्ही पूर्ण केली आहे. उद्या भेटू.")
         return
@@ -660,12 +913,14 @@ async def cmd_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          (user_id, (today - timedelta(days=today.weekday())).isoformat())).fetchone()[0]
         mo = con.execute("SELECT COALESCE(SUM(points),0) FROM answers WHERE user_id=? AND qday>=?",
                          (user_id, today.replace(day=1).isoformat())).fetchone()[0]
-        bonus = con.execute("SELECT COALESCE(bonus,0) FROM users WHERE user_id=?", (user_id,)).fetchone()
+        wkb = con.execute("SELECT COALESCE(SUM(points),0) FROM bonuses WHERE user_id=? AND qday>=?",
+                          (user_id, (today - timedelta(days=today.weekday())).isoformat())).fetchone()[0]
+        mob = con.execute("SELECT COALESCE(SUM(points),0) FROM bonuses WHERE user_id=? AND qday>=?",
+                          (user_id, today.replace(day=1).isoformat())).fetchone()[0]
         days = con.execute("SELECT COUNT(DISTINCT qday) FROM answers WHERE user_id=?", (user_id,)).fetchone()[0]
-    bonus = bonus[0] if bonus else 0
     text = (f"<b>माझे गुण</b>\n"
             f"आज {pts} गुण" + (f"  नंबर {rank}" if rank else "  (अजून खेळला नाही)") + "\n"
-            f"या आठवड्यात {wk}\nया महिन्यात {mo + bonus} (बोनस {bonus})\n"
+            f"या आठवड्यात {wk + wkb} (बोनस {wkb})\nया महिन्यात {mo + mob} (बोनस {mob})\n"
             f"एकूण खेळलेले दिवस {days}\nसलग दिवस {streak_days(user_id)}")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -675,7 +930,7 @@ def fmt_board(title, rows):
         return f"<b>{title}</b>\nअजून कोणी खेळलं नाही."
     lines = [f"<b>{title}</b>"]
     for i, r in enumerate(rows, 1):
-        lines.append(f"{i}. {mention(r['user_id'], r['name'])}  {r['pts']} गुण  {r['secs']:.0f} से.")
+        lines.append(f"{i}. {shown_name(r)}  {r['pts']} गुण  {r['secs']:.0f} से.")
     return "\n".join(lines)
 
 
@@ -709,7 +964,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/play आजचे प्रश्न\n/score माझे गुण\n/top आजची यादी\n/top week आठवड्याची यादी\n"
         "/top month महिन्याची यादी\n/remind off आठवण बंद\n/remind on आठवण सुरू"
-        + ("\n\nऍडमिन\n/add नवा प्रश्न\n/bank प्रश्न साठा\n/show 12 प्रश्न बघा\n/del 12 प्रश्न काढा\n/preview आजचे प्रश्न\n/stats आकडे\n/post morning|evening|remind\n/broadcast मेसेज\n/export /backup" if is_admin(update) else ""))
+        + ("\n\nऍडमिन\n/add नवा प्रश्न\n/bank प्रश्न साठा\n/show 12 प्रश्न बघा\n/del 12 प्रश्न काढा\n/preview आजचे प्रश्न\n/stats आकडे\n/post morning|evening|remind\n/broadcast मेसेज\n/export Excel\n/backup\n/refreeze आजचे प्रश्न पुन्हा" if is_admin(update) else ""))
 
 
 # --------------------------------------------------------------------------
@@ -784,25 +1039,107 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     with db() as con:
         users = con.execute("SELECT user_id FROM users WHERE remind=1").fetchall()
-    n = 0
-    for u in users:
-        if await safe_send(context.bot, u["user_id"], text):
-            n += 1
-        await asyncio.sleep(0.05)
-    await update.message.reply_text(f"{n} जणांना पाठवलं.")
+
+    async def run():
+        n = 0
+        for u in users:
+            if await safe_send(context.bot, u["user_id"], text):
+                n += 1
+            await asyncio.sleep(0.05)
+        await safe_send(context.bot, update.effective_user.id, f"{n} जणांना पाठवलं.")
+    context.application.create_task(run())
+    await update.message.reply_text(f"{len(users)} जणांना पाठवतोय. झालं की सांगतो.")
+
+
+def build_export_xlsx(path):
+    """Excel with three sheets: users (profile), answers (one row per user per day, Y/N per question),
+    and summary (per-category correct %)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    wb = Workbook()
+    ws = wb.active; ws.title = "users"
+    ws.append(["user_id", "नाव", "टेलिग्राम नाव", "username", "भाग", "व्यवसाय", "जन्मवर्ष", "वय",
+               "जोडले", "कुठून", "खेळलेले दिवस", "एकूण गुण"])
+    with db() as con:
+        rows = con.execute(
+            """SELECT u.*, COUNT(DISTINCT a.qday) d, COALESCE(SUM(a.points),0) p
+               FROM users u LEFT JOIN answers a ON a.user_id=u.user_id GROUP BY u.user_id ORDER BY u.joined""").fetchall()
+        yr = now().year
+        for r in rows:
+            age = (yr - r["birth_year"]) if r["birth_year"] else ""
+            ws.append([r["user_id"], r["display_name"] or "", r["name"] or "", r["username"] or "",
+                       r["area"] or "", r["profession"] or "", r["birth_year"] or "", age,
+                       (r["joined"] or "")[:10], r["source"] or "", r["d"], r["p"]])
+        ws2 = wb.create_sheet("answers")
+        ws2.append(["तारीख", "user_id", "नाव", "भाग", "व्यवसाय", "जन्मवर्ष",
+                    "प्र1 विषय", "प्र1", "प्र2 विषय", "प्र2", "प्र3 विषय", "प्र3", "प्र4 विषय", "प्र4", "प्र5 विषय", "प्र5",
+                    "बरोबर", "गुण", "सेकंद"])
+        days = [r["qday"] for r in con.execute("SELECT DISTINCT qday FROM answers ORDER BY qday").fetchall()]
+        cat_stats = {}
+        for qd in days:
+            qs = questions_for_day(qd)
+            order = [q["id"] for q in qs]
+            cats = {q["id"]: q["category"] for q in qs}
+            urows = con.execute(
+                """SELECT a.user_id, u.display_name, u.area, u.profession, u.birth_year, a.qid, a.correct, a.points, a.seconds
+                   FROM answers a JOIN users u ON u.user_id=a.user_id WHERE a.qday=? ORDER BY a.user_id""", (qd,)).fetchall()
+            per = {}
+            for a in urows:
+                per.setdefault(a["user_id"], {"u": a, "ans": {}})
+                per[a["user_id"]]["ans"][a["qid"]] = a
+                c = cats.get(a["qid"], "")
+                st = cat_stats.setdefault(c, [0, 0]); st[0] += a["correct"]; st[1] += 1
+            for uid, v in per.items():
+                u = v["u"]; line = [qd, uid, u["display_name"] or "", u["area"] or "", u["profession"] or "", u["birth_year"] or ""]
+                corr = pts = secs = 0
+                for qid in order:
+                    a = v["ans"].get(qid)
+                    line += [cats.get(qid, ""), ("Y" if a["correct"] else "N") if a else "-"]
+                    if a:
+                        corr += a["correct"]; pts += a["points"]; secs += a["seconds"]
+                line += [corr, pts, round(secs)]
+                ws2.append(line)
+        ws3 = wb.create_sheet("summary")
+        ws3.append(["विषय", "उत्तरं", "बरोबर", "बरोबर टक्के"])
+        for c, (ok, tot) in cat_stats.items():
+            ws3.append([c, tot, ok, round(100 * ok / tot) if tot else 0])
+    for w in (ws, ws2, ws3):
+        for cell in w[1]:
+            cell.font = Font(bold=True, color="FFFFFF"); cell.fill = PatternFill("solid", fgColor="534AB7")
+        w.freeze_panes = "A2"
+    wb.save(path)
+
+
+async def send_export_to(bot, chat_id):
+    path = os.path.join(DATA_DIR, f"knowyourcity-{now():%Y-%m-%d}.xlsx")
+    await asyncio.to_thread(build_export_xlsx, path)
+    with open(path, "rb") as f:
+        await bot.send_document(chat_id, f, filename=os.path.basename(path),
+                                caption="सभासद. रोजची उत्तरं Y N. विषयानुसार आकडे.")
+
+
+async def job_nightly_export(context: ContextTypes.DEFAULT_TYPE):
+    for a in ADMIN_IDS:
+        try:
+            await send_export_to(context.bot, a)
+        except Exception as e:
+            log.warning("nightly export to %s failed: %s", a, e)
 
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: /export sends a CSV of users and total points (for prizes and sponsors)."""
+    """Admin: /export sends the Excel (users, answers Y/N, summary)."""
     if not is_admin(update):
         return
+    await send_export_to(context.bot, update.effective_user.id)
+    return
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["user_id", "name", "username", "joined", "source", "days_played", "total_points"])
     with db() as con:
         rows = con.execute(
             """SELECT u.user_id, u.name, u.username, u.joined, u.source,
-                      COUNT(DISTINCT a.qday) d, COALESCE(SUM(a.points),0)+COALESCE(u.bonus,0) p
+                      COUNT(DISTINCT a.qday) d,
+                      COALESCE(SUM(a.points),0)+COALESCE((SELECT SUM(points) FROM bonuses b WHERE b.user_id=u.user_id),0) p
                FROM users u LEFT JOIN answers a ON a.user_id=u.user_id
                GROUP BY u.user_id ORDER BY p DESC"""
         ).fetchall()
@@ -819,6 +1156,9 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     doc = update.message.document
     if not doc:
+        return
+    if SHEET_URL:
+        await update.message.reply_text("प्रश्न Google Sheet मधून येतात. फाइल पाठवण्याऐवजी शीटमध्ये लिहा.\n" + SHEET_URL)
         return
     name = (doc.file_name or "").lower()
     if not (name.endswith(".csv") or name.endswith(".xlsx")):
@@ -840,7 +1180,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # always store as CSV
     with open(QUESTIONS_PATH, "w", encoding="utf-8", newline="") as out:
         cols = ["id", "category", "question", "option_a", "option_b", "option_c", "option_d",
-                "correct", "explanation", "source", "image"]
+                "correct", "explanation", "source", "image", "date"]
         w = csv.DictWriter(out, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         for r in rows:
@@ -890,7 +1230,7 @@ def next_qid():
 
 def append_question(q):
     cols = ["id", "category", "question", "option_a", "option_b", "option_c", "option_d",
-            "correct", "explanation", "source", "image"]
+            "correct", "explanation", "source", "image", "date"]
     rows = read_rows(QUESTIONS_PATH) if os.path.exists(QUESTIONS_PATH) else []
     with open(QUESTIONS_PATH, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
@@ -916,6 +1256,15 @@ def add_preview(st):
             + ("फोटो आहे\n" if st.get("image") else ""))
 
 
+OWN_CHANNEL_POSTS = set()
+
+
+async def channel_send(bot, text, **kw):
+    m = await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, **kw)
+    OWN_CHANNEL_POSTS.add(m.message_id)
+    return m
+
+
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """A human posts on the channel -> bot shows it to the admin with Send/Skip buttons.
     Only after the admin presses Send is it copied to every subscriber."""
@@ -925,7 +1274,7 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chan = (msg.chat.username or "").lower()
     if CHANNEL_ID.lstrip("@").lower() != chan and str(msg.chat.id) != CHANNEL_ID:
         return
-    if msg.from_user and msg.from_user.id == context.bot.id:
+    if msg.message_id in OWN_CHANNEL_POSTS or (msg.from_user and msg.from_user.id == context.bot.id):
         return
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("सगळ्यांना पाठवा", callback_data=f"cp_send_{msg.chat.id}_{msg.message_id}"),
@@ -951,20 +1300,40 @@ async def on_channel_post_button(update: Update, context: ContextTypes.DEFAULT_T
     await q.edit_message_text("पाठवतोय.")
     with db() as con:
         users = con.execute("SELECT user_id FROM users WHERE remind=1").fetchall()
-    n = 0
-    for u in users:
-        try:
-            await context.bot.copy_message(u["user_id"], int(chat_id), int(message_id))
-            n += 1
-        except RetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
-        except Forbidden:
-            with db() as con:
-                con.execute("UPDATE users SET remind=0 WHERE user_id=?", (u["user_id"],))
-        except Exception as e:
-            log.warning("copy to %s failed: %s", u["user_id"], e)
-        await asyncio.sleep(0.05)
-    await q.edit_message_text(f"चॅनलवरची पोस्ट {n} जणांना खासगी पाठवली.")
+    admin_id = q.from_user.id
+
+    async def run():
+        n = 0
+        for u in users:
+            for attempt in range(2):
+                try:
+                    await context.bot.copy_message(u["user_id"], int(chat_id), int(message_id))
+                    n += 1
+                    break
+                except RetryAfter as e:
+                    await asyncio.sleep(e.retry_after + 1)
+                except Forbidden:
+                    with db() as con:
+                        con.execute("UPDATE users SET remind=0 WHERE user_id=?", (u["user_id"],))
+                    break
+                except Exception as e:
+                    log.warning("copy to %s failed: %s", u["user_id"], e)
+                    break
+            await asyncio.sleep(0.05)
+        await safe_send(context.bot, admin_id, f"चॅनलवरची पोस्ट {n} जणांना खासगी पाठवली.")
+    context.application.create_task(run())
+
+
+async def cmd_refreeze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: /refreeze [date]  recompute that day's 5 questions from the current bank."""
+    if not is_admin(update):
+        return
+    qday = norm_date(context.args[0]) if context.args else quiz_day()
+    qday = qday or quiz_day()
+    with db() as con:
+        con.execute("DELETE FROM day_questions WHERE qday=?", (qday,))
+    qs = questions_for_day(qday)
+    await update.message.reply_text(f"{day_label(qday)} चे प्रश्न पुन्हा ठरवले. " + ", ".join(str(q["id"]) for q in qs))
 
 
 async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1016,6 +1385,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "प्रश्न Google Sheet मधून येतात. शीटमध्ये नवी ओळ लिहा. ठराविक दिवशी हवा असेल तर date कॉलममध्ये तारीख. "
             "फोटो असेल तर image कॉलममध्ये Drive लिंक. दहा मिनिटांत बॉट घेतो किंवा /sync ने लगेच.\n" + SHEET_URL)
         return
+    context.user_data.pop("await_name", None)
     context.user_data["add"] = {"step": "question", "options": ["", "", "", ""], "image": "",
                                 "explanation": "", "id": next_extra_id(),
                                 "category": " ".join(context.args) if context.args else ""}
@@ -1196,7 +1566,7 @@ async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     rows = [r for r in read_rows(QUESTIONS_PATH) if str(r.get("id", "")).strip() != str(qid)]
     cols = ["id", "category", "question", "option_a", "option_b", "option_c", "option_d",
-            "correct", "explanation", "source", "image"]
+            "correct", "explanation", "source", "image", "date"]
     with open(QUESTIONS_PATH, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -1230,20 +1600,55 @@ async def cmd_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------------------------------------------------------------------------
 # Scheduled jobs
 # --------------------------------------------------------------------------
+MORNING_LINES = [
+    "सोमवारची सुरुवात शहराच्या ओळखीने.",
+    "मंगळवार. आज पाच प्रश्न आणि तीस सेकंदांचं आव्हान.",
+    "बुधवार. आठवड्याचा मध्य. यादीत वर जायची संधी.",
+    "गुरुवार. काल चुकलं ते आज भरून काढा.",
+    "शुक्रवार. आठवड्याच्या विजेत्यांची शर्यत आता रंगतेय.",
+    "शनिवार. निवांत बसून खेळा पण घड्याळ तीस सेकंदांचंच.",
+    "रविवार. आज रात्री आठवड्याचे विजेते जाहीर.",
+]
+MORNING_TAGS = [
+    "आपल्या शहराबद्दल रोज एक नवी गोष्ट.",
+    "पुणेकर म्हणून स्वतःला तपासा.",
+    "जे शहर रोज बघता ते किती ओळखता.",
+    "पाच प्रश्न. पाच विषय. एक शहर.",
+    "वारसा पर्यावरण शहर सुविधा आणि सामान्य ज्ञान.",
+    "मित्रांना आमंत्रण द्या आणि बोनस गुण मिळवा.",
+    "सलग सात दिवस खेळा आणि दहा गुण बोनस.",
+]
+
+
+def morning_text(qday, cats):
+    d = date.fromisoformat(qday)
+    n = day_number(qday)
+    head = MORNING_LINES[d.weekday()]
+    tag = MORNING_TAGS[(n + d.weekday()) % len(MORNING_TAGS)]
+    with db() as con:
+        total = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    lines = [f"<b>{head}</b>", f"दिवस {n}  {day_label(qday)}", ""]
+    if cats:
+        lines.append("आजचे विषय " + ". ".join(cats) + ".")
+    lines.append(f"{QUESTIONS_PER_DAY} प्रश्न. प्रत्येकाला {POLL_OPEN_SECONDS} सेकंद. रात्री {RESULT_HOUR} पर्यंत खेळा.")
+    lines.append(tag)
+    if total >= 50:
+        lines.append(f"आजपर्यंत {total} खेळाडू.")
+    if SPONSOR_TEXT:
+        lines += ["", SPONSOR_TEXT]
+    return "\n".join(lines)
+
+
 async def job_morning(context: ContextTypes.DEFAULT_TYPE):
     if not CHANNEL_ID:
         return
-    me = await context.bot.get_me()
+    me = context.bot
     qday = quiz_day()
-    cats = sorted({q["category"] for q in questions_for_day(qday) if q["category"]})
-    text = (f"<b>आजची स्पर्धा सुरू</b>\n"
-            f"दिवस {day_number(qday)}  {day_label(qday)}\n"
-            f"{QUESTIONS_PER_DAY} प्रश्न" + (f"  विषय {', '.join(cats)}" if cats else "") + "\n"
-            f"उद्या सकाळी {QUIZ_HOUR} पर्यंत खेळा. उत्तरं आणि विजेते रात्री {RESULT_HOUR} वाजता."
-            + (f"\n\n{SPONSOR_TEXT}" if SPONSOR_TEXT else ""))
+    cats = [q["category"] for q in questions_for_day(qday) if q["category"]]
+    text = morning_text(qday, cats)
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", url=f"https://t.me/{me.username}?start=channel")]])
     try:
-        await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        await channel_send(context.bot, text, reply_markup=kb)
     except Exception as e:
         log.error("channel post failed: %s", e)
 
@@ -1254,10 +1659,9 @@ async def job_reminder(context: ContextTypes.DEFAULT_TYPE):
         users = con.execute(
             "SELECT user_id FROM users WHERE remind=1 AND user_id NOT IN "
             "(SELECT user_id FROM answers WHERE qday=?)", (qday,)).fetchall()
-    me = await context.bot.get_me()
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("आता खेळा", callback_data="play")]])
-    hours_left = (QUIZ_HOUR + 24 - now().hour) % 24
-    text = f"आजची स्पर्धा अजून बाकी आहे. {hours_left} तास उरले. दोन मिनिटांत {QUESTIONS_PER_DAY} प्रश्न."
+    hours_left = max(1, RESULT_HOUR - now().hour)
+    text = f"आजची स्पर्धा अजून बाकी आहे. रात्री {RESULT_HOUR} पर्यंत {hours_left} तास उरले. दोन मिनिटांत {QUESTIONS_PER_DAY} प्रश्न."
     n = 0
     for u in users:
         if await safe_send(context.bot, u["user_id"], text, reply_markup=kb):
@@ -1284,7 +1688,7 @@ async def job_evening(context: ContextTypes.DEFAULT_TYPE):
     if SPONSOR_TEXT:
         lines.append(f"\n{SPONSOR_TEXT}")
     try:
-        await context.bot.send_message(CHANNEL_ID, "\n".join(lines), parse_mode=ParseMode.HTML)
+        await channel_send(context.bot, "\n".join(lines))
     except Exception as e:
         log.error("evening post failed: %s", e)
 
@@ -1294,7 +1698,10 @@ async def job_morning_push(context: ContextTypes.DEFAULT_TYPE):
     with db() as con:
         users = con.execute("SELECT user_id FROM users WHERE remind=1").fetchall()
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
-    text = f"सुप्रभात. आजचे {QUESTIONS_PER_DAY} प्रश्न तयार आहेत. दिवस {day_number(quiz_day())}."
+    qd = quiz_day()
+    cats = [q["category"] for q in questions_for_day(qd) if q["category"]]
+    text = (f"सुप्रभात. {MORNING_LINES[date.fromisoformat(qd).weekday()]}\n"
+            f"दिवस {day_number(qd)}. आजचे विषय " + ". ".join(cats) + f".\nरात्री {RESULT_HOUR} पर्यंत खेळा.")
     for u in users:
         await safe_send(context.bot, u["user_id"], text, reply_markup=kb)
         await asyncio.sleep(0.05)
@@ -1308,14 +1715,25 @@ async def post_init(app: Application):
         BotCommand("play", "आजचे प्रश्न"),
         BotCommand("score", "माझे गुण"),
         BotCommand("top", "आजची यादी"),
+        BotCommand("name", "यादीतलं माझं नाव बदला"),
         BotCommand("remind", "आठवण सुरू किंवा बंद"),
         BotCommand("help", "मदत"),
     ])
+    # polls left open across a restart: close them as 0 points so nobody is stuck
+    with db() as con:
+        stale = con.execute("SELECT poll_id,user_id,qday,qid FROM polls WHERE answered=0").fetchall()
+        for r in stale:
+            con.execute("UPDATE polls SET answered=1 WHERE poll_id=?", (r["poll_id"],))
+            con.execute("INSERT OR IGNORE INTO answers(user_id,qday,qid,correct,seconds,points,ts) VALUES(?,?,?,?,?,?,?)",
+                        (r["user_id"], r["qday"], r["qid"], 0, POLL_OPEN_SECONDS, 0, now().isoformat()))
+    if stale:
+        log.info("closed %d polls left open across restart", len(stale))
     jq = app.job_queue
     jq.run_daily(job_morning, time(QUIZ_HOUR, 0, tzinfo=TZ), name="morning")
     jq.run_daily(job_morning_push, time(QUIZ_HOUR, 1, tzinfo=TZ), name="morning_push")
     jq.run_daily(job_reminder, time(REMIND_HOUR, 0, tzinfo=TZ), name="reminder")
     jq.run_daily(job_evening, time(RESULT_HOUR, 0, tzinfo=TZ), name="evening")
+    jq.run_daily(job_nightly_export, time(RESULT_HOUR, 30, tzinfo=TZ), name="nightly_export")
     if SHEET_URL:
         jq.run_repeating(job_sync, interval=SHEET_SYNC_MINUTES * 60, first=5, name="sheet_sync")
     log.info("jobs scheduled; questions=%d; channel=%s; admins=%s", len(QUESTIONS), CHANNEL_ID, ADMIN_IDS)
@@ -1324,7 +1742,7 @@ async def post_init(app: Application):
 def main():
     init_db()
     load_questions()
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("play", cmd_play))
     app.add_handler(CommandHandler("score", cmd_score))
@@ -1337,6 +1755,7 @@ def main():
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.UpdateType.CHANNEL_POST, on_channel_post))
     app.add_handler(CallbackQueryHandler(on_channel_post_button, pattern="^cp_"))
     app.add_handler(CommandHandler("sync", cmd_sync))
+    app.add_handler(CommandHandler("refreeze", cmd_refreeze))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("skip", cmd_skip))
@@ -1344,12 +1763,14 @@ def main():
     app.add_handler(CommandHandler("del", cmd_del))
     app.add_handler(CommandHandler("show", cmd_show))
     app.add_handler(CallbackQueryHandler(on_add_button, pattern="^add_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_add_text))
+    app.add_handler(CommandHandler("name", cmd_name))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CallbackQueryHandler(on_play, pattern="^play$"))
     app.add_handler(CallbackQueryHandler(on_top_month, pattern="^top_month$"))
+    app.add_handler(CallbackQueryHandler(on_profession_button, pattern="^prof_"))
     app.add_handler(PollAnswerHandler(on_poll_answer))
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, on_document))
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, on_photo))
