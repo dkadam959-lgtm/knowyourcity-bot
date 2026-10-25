@@ -53,6 +53,226 @@ RESULT_HOUR = int(os.environ.get("RESULT_HOUR", "21"))   # answers 21:00
 QUESTIONS_PER_DAY = 5
 # one question from each of these five themes every day, in this order
 CATEGORIES = ["वारसा", "पर्यावरण", "शहर", "पायाभूत सुविधा", "सामान्य ज्ञान"]
+CAT_NAMES = {
+    "वारसा": {"hi": "विरासत", "en": "Heritage"},
+    "पर्यावरण": {"hi": "पर्यावरण", "en": "Environment"},
+    "शहर": {"hi": "शहर", "en": "City"},
+    "पायाभूत सुविधा": {"hi": "बुनियादी सुविधाएँ", "en": "Infrastructure"},
+    "सामान्य ज्ञान": {"hi": "सामान्य ज्ञान", "en": "General Knowledge"},
+}
+LANGS = ("mr", "hi", "en")
+LANG_NAMES = {"mr": "मराठी", "hi": "हिंदी", "en": "English"}
+# optional sheet columns holding translations: question_hi, option_a_hi ... explanation_hi, same with _en
+TR_FIELDS = ("question", "option_a", "option_b", "option_c", "option_d", "explanation")
+
+T = {
+"mr": {
+ "choose_lang": "भाषा निवडा.",
+ "lang_set": "भाषा मराठी. प्रश्न आणि मेसेज मराठीत येतील. /lang ने कधीही बदला.",
+ "welcome": "नमस्कार {name}. <b>Know Your City</b> मध्ये स्वागत.\n\nरोज सकाळी {h} वाजता तुमच्या शहराबद्दल {n} प्रश्न. बरोबर उत्तराला {p} गुण आणि वेगाचा बोनस {b} पर्यंत. रोज आठवड्याला आणि महिन्याला विजेते जाहीर होतात.\n\n",
+ "before_start": "सुरू करण्यापूर्वी चार छोट्या गोष्टी.",
+ "press_play": "तयार असाल तर खालचं बटण दाबा.",
+ "play_btn": "आजची स्पर्धा खेळा",
+ "play_now_btn": "आता खेळा",
+ "done_today": "आजची स्पर्धा तुम्ही पूर्ण केली आहे. उद्या सकाळी {h} वाजता पुढचे प्रश्न येतील.\n/score माझे गुण  /top आजची यादी",
+ "done_short": "आजची स्पर्धा तुम्ही पूर्ण केली आहे. उद्या भेटू.",
+ "closed": "आजची स्पर्धा रात्री {r} वाजता संपली. उद्या सकाळी {h} वाजता पुढचे प्रश्न.",
+ "ask_name": "तुमचं नाव काय. हेच नाव विजेत्यांच्या यादीत दिसेल.",
+ "ask_area": "तुम्ही कुठे राहता. भाग किंवा गाव. उदाहरण कोथरूड किंवा बारामती.",
+ "ask_prof": "तुम्ही काय करता. बटण दाबा किंवा लिहा.",
+ "ask_year": "तुमचं जन्मवर्ष. फक्त चार अंक. उदाहरण 1995.",
+ "prof": ["विद्यार्थी", "नोकरी", "व्यवसाय", "शेती", "गृहिणी", "शिक्षक", "निवृत्त", "इतर"],
+ "prof_set": "व्यवसाय {p}.",
+ "year_err": "जन्मवर्ष चार अंकात लिहा. उदाहरण 1995.",
+ "short_err": "किमान दोन अक्षरं लिहा.",
+ "thanks_saved": "धन्यवाद. माहिती नोंदवली.",
+ "thanks_play": "धन्यवाद. आता खालचं बटण दाबा.",
+ "name_cur": "सध्याचं नाव {n}. ",
+ "name_ask": "यादीत दाखवायचं नवं नाव लिहून पाठवा.",
+ "name_err": "नाव किमान दोन अक्षरांचं हवं. पुन्हा लिहा.",
+ "name_ok": "ठीक. यादीत {n} असं दिसेल.",
+ "q_header": "प्रश्न {i}/{n}  ({s} सेकंद)",
+ "photo_cap": "प्रश्न {i} साठी फोटो",
+ "source": "स्रोत",
+ "timeout": "वेळ संपली. हा प्रश्न ० गुण. पुढचा प्रश्न येतोय.",
+ "referral_paid": "तुमच्या आमंत्रणाने आलेल्या मित्राने आजची स्पर्धा पूर्ण केली. तुम्हाला {b} बोनस गुण मिळाले.",
+ "res_title": "<b>आजचा निकाल</b>  दिवस {d}",
+ "res_pts": "गुण <b>{p}</b> / {m}",
+ "res_time": "वेळ {s} सेकंद",
+ "res_rank": "आजचा नंबर <b>{r}</b> ({t} खेळाडूंमध्ये)",
+ "res_streak": "सलग दिवस <b>{n}</b>",
+ "res_streak_bonus": "  सलग {n} दिवसांचा बोनस {b} गुण",
+ "res_top": "आजचे आघाडीवर",
+ "res_channel": "उत्तरं आणि विजेते रात्री {r} वाजता चॅनलवर.",
+ "res_invite": "मित्राला आमंत्रण द्या आणि {b} बोनस गुण मिळवा.",
+ "res_name": "यादीतलं तुमचं नाव बदलायचं असेल तर /name.",
+ "share_btn": "मित्राला पाठवा",
+ "share_text": "रोज 5 प्रश्न. तुमचं शहर किती ओळखता?",
+ "month_btn": "माझा महिन्याचा हिशेब",
+ "sc_title": "<b>माझे गुण</b>",
+ "sc_today": "आज {p} गुण",
+ "sc_rank": "  नंबर {r}",
+ "sc_none": "  (अजून खेळला नाही)",
+ "sc_week": "या आठवड्यात {t} (बोनस {b})",
+ "sc_month": "या महिन्यात {t} (बोनस {b})",
+ "sc_days": "एकूण खेळलेले दिवस {d}",
+ "sc_streak": "सलग दिवस {n}",
+ "board_none": "अजून कोणी खेळलं नाही.",
+ "board_row": "{i}. {name}  {p} गुण  {s} से.",
+ "top_day": "आजचे आघाडीवर", "top_week": "या आठवड्याचे आघाडीवर", "top_month": "या महिन्याचे आघाडीवर",
+ "remind_off": "आठवण बंद केली. /remind on ने पुन्हा सुरू करता येईल.",
+ "remind_on": "रोज दुपारी {h} वाजता न खेळल्यास आठवण येईल.",
+ "help": "/play आजचे प्रश्न\n/score माझे गुण\n/top आजची यादी\n/top week आठवड्याची यादी\n/top month महिन्याची यादी\n/name यादीतलं नाव\n/lang भाषा\n/remind off आठवण बंद\n/remind on आठवण सुरू",
+ "reminder": "आजची स्पर्धा अजून बाकी आहे. रात्री {r} पर्यंत {hl} तास उरले. दोन मिनिटांत {n} प्रश्न.",
+ "morning": "सुप्रभात. {line}\nदिवस {d}. आजचे विषय {cats}.\nरात्री {r} पर्यंत खेळा.",
+},
+"hi": {
+ "choose_lang": "भाषा चुनें.",
+ "lang_set": "भाषा हिंदी. सवाल और संदेश हिंदी में आएँगे. /lang से कभी भी बदलें.",
+ "welcome": "नमस्ते {name}. <b>Know Your City</b> में स्वागत है.\n\nरोज़ सुबह {h} बजे आपके शहर के बारे में {n} सवाल. सही जवाब पर {p} अंक और तेज़ी का बोनस {b} तक. रोज़ हफ़्ते और महीने के विजेता घोषित होते हैं.\n\n",
+ "before_start": "शुरू करने से पहले चार छोटी बातें.",
+ "press_play": "तैयार हों तो नीचे का बटन दबाएँ.",
+ "play_btn": "आज की प्रतियोगिता खेलें",
+ "play_now_btn": "अभी खेलें",
+ "done_today": "आज की प्रतियोगिता आपने पूरी कर ली है. कल सुबह {h} बजे अगले सवाल आएँगे.\n/score मेरे अंक  /top आज की सूची",
+ "done_short": "आज की प्रतियोगिता आपने पूरी कर ली है. कल मिलते हैं.",
+ "closed": "आज की प्रतियोगिता रात {r} बजे खत्म हुई. कल सुबह {h} बजे अगले सवाल.",
+ "ask_name": "आपका नाम क्या है. यही नाम विजेताओं की सूची में दिखेगा.",
+ "ask_area": "आप कहाँ रहते हैं. इलाका या गाँव. उदाहरण कोथरूड या बारामती.",
+ "ask_prof": "आप क्या करते हैं. बटन दबाएँ या लिखें.",
+ "ask_year": "आपका जन्म वर्ष. सिर्फ़ चार अंक. उदाहरण 1995.",
+ "prof": ["विद्यार्थी", "नौकरी", "व्यवसाय", "खेती", "गृहिणी", "शिक्षक", "सेवानिवृत्त", "अन्य"],
+ "prof_set": "व्यवसाय {p}.",
+ "year_err": "जन्म वर्ष चार अंकों में लिखें. उदाहरण 1995.",
+ "short_err": "कम से कम दो अक्षर लिखें.",
+ "thanks_saved": "धन्यवाद. जानकारी दर्ज हो गई.",
+ "thanks_play": "धन्यवाद. अब नीचे का बटन दबाएँ.",
+ "name_cur": "अभी का नाम {n}. ",
+ "name_ask": "सूची में दिखाने का नया नाम लिखकर भेजें.",
+ "name_err": "नाम कम से कम दो अक्षर का हो. फिर से लिखें.",
+ "name_ok": "ठीक. सूची में {n} दिखेगा.",
+ "q_header": "सवाल {i}/{n}  ({s} सेकंड)",
+ "photo_cap": "सवाल {i} के लिए फ़ोटो",
+ "source": "स्रोत",
+ "timeout": "समय खत्म. इस सवाल पर 0 अंक. अगला सवाल आ रहा है.",
+ "referral_paid": "आपके निमंत्रण से आए दोस्त ने आज की प्रतियोगिता पूरी की. आपको {b} बोनस अंक मिले.",
+ "res_title": "<b>आज का नतीजा</b>  दिन {d}",
+ "res_pts": "अंक <b>{p}</b> / {m}",
+ "res_time": "समय {s} सेकंड",
+ "res_rank": "आज का स्थान <b>{r}</b> ({t} खिलाड़ियों में)",
+ "res_streak": "लगातार दिन <b>{n}</b>",
+ "res_streak_bonus": "  लगातार {n} दिनों का बोनस {b} अंक",
+ "res_top": "आज के अग्रणी",
+ "res_channel": "जवाब और विजेता रात {r} बजे चैनल पर.",
+ "res_invite": "दोस्त को निमंत्रण दें और {b} बोनस अंक पाएँ.",
+ "res_name": "सूची में अपना नाम बदलना हो तो /name.",
+ "share_btn": "दोस्त को भेजें",
+ "share_text": "रोज़ 5 सवाल. अपने शहर को कितना जानते हैं?",
+ "month_btn": "मेरा महीने का हिसाब",
+ "sc_title": "<b>मेरे अंक</b>",
+ "sc_today": "आज {p} अंक",
+ "sc_rank": "  स्थान {r}",
+ "sc_none": "  (अभी खेला नहीं)",
+ "sc_week": "इस हफ़्ते {t} (बोनस {b})",
+ "sc_month": "इस महीने {t} (बोनस {b})",
+ "sc_days": "कुल खेले दिन {d}",
+ "sc_streak": "लगातार दिन {n}",
+ "board_none": "अभी किसी ने नहीं खेला.",
+ "board_row": "{i}. {name}  {p} अंक  {s} से.",
+ "top_day": "आज के अग्रणी", "top_week": "इस हफ़्ते के अग्रणी", "top_month": "इस महीने के अग्रणी",
+ "remind_off": "याद दिलाना बंद किया. /remind on से फिर शुरू कर सकते हैं.",
+ "remind_on": "रोज़ दोपहर {h} बजे न खेलने पर याद दिलाया जाएगा.",
+ "help": "/play आज के सवाल\n/score मेरे अंक\n/top आज की सूची\n/top week हफ़्ते की सूची\n/top month महीने की सूची\n/name सूची का नाम\n/lang भाषा\n/remind off याद दिलाना बंद\n/remind on याद दिलाना शुरू",
+ "reminder": "आज की प्रतियोगिता अभी बाकी है. रात {r} बजे तक {hl} घंटे बचे हैं. दो मिनट में {n} सवाल.",
+ "morning": "सुप्रभात. {line}\nदिन {d}. आज के विषय {cats}.\nरात {r} बजे तक खेलें.",
+},
+"en": {
+ "choose_lang": "Choose your language.",
+ "lang_set": "Language set to English. Questions and messages will be in English. Change anytime with /lang.",
+ "welcome": "Hello {name}. Welcome to <b>Know Your City</b>.\n\nEvery morning at {h} you get {n} questions about your city. {p} points for a correct answer and up to {b} speed bonus. Daily weekly and monthly winners.\n\n",
+ "before_start": "Four quick things before we start.",
+ "press_play": "Press the button below when ready.",
+ "play_btn": "Play today's quiz",
+ "play_now_btn": "Play now",
+ "done_today": "You have finished today's quiz. Next questions tomorrow at {h} am.\n/score my points  /top today's board",
+ "done_short": "You have finished today's quiz. See you tomorrow.",
+ "closed": "Today's quiz closed at {r}:00. Next questions tomorrow at {h} am.",
+ "ask_name": "What is your name. This name will appear on the winners board.",
+ "ask_area": "Where do you live. Area or village. For example Kothrud or Baramati.",
+ "ask_prof": "What do you do. Press a button or type.",
+ "ask_year": "Your birth year. Four digits only. For example 1995.",
+ "prof": ["Student", "Job", "Business", "Farming", "Homemaker", "Teacher", "Retired", "Other"],
+ "prof_set": "Profession {p}.",
+ "year_err": "Please type the birth year as four digits. For example 1995.",
+ "short_err": "Please type at least two letters.",
+ "thanks_saved": "Thank you. Details saved.",
+ "thanks_play": "Thank you. Now press the button below.",
+ "name_cur": "Current name {n}. ",
+ "name_ask": "Type the new name to show on the board.",
+ "name_err": "Name needs at least two letters. Try again.",
+ "name_ok": "Done. The board will show {n}.",
+ "q_header": "Question {i}/{n}  ({s} seconds)",
+ "photo_cap": "Photo for question {i}",
+ "source": "Source",
+ "timeout": "Time is up. 0 points for this question. Next question coming.",
+ "referral_paid": "A friend you invited finished today's quiz. You earned {b} bonus points.",
+ "res_title": "<b>Today's result</b>  Day {d}",
+ "res_pts": "Points <b>{p}</b> / {m}",
+ "res_time": "Time {s} seconds",
+ "res_rank": "Today's rank <b>{r}</b> (of {t} players)",
+ "res_streak": "Streak <b>{n}</b> days",
+ "res_streak_bonus": "  {n} day streak bonus {b} points",
+ "res_top": "Today's leaders",
+ "res_channel": "Answers and winners on the channel at {r}:00.",
+ "res_invite": "Invite a friend and earn {b} bonus points.",
+ "res_name": "To change your name on the board use /name.",
+ "share_btn": "Send to a friend",
+ "share_text": "5 questions a day. How well do you know your city?",
+ "month_btn": "My monthly tally",
+ "sc_title": "<b>My points</b>",
+ "sc_today": "Today {p} points",
+ "sc_rank": "  rank {r}",
+ "sc_none": "  (not played yet)",
+ "sc_week": "This week {t} (bonus {b})",
+ "sc_month": "This month {t} (bonus {b})",
+ "sc_days": "Days played {d}",
+ "sc_streak": "Streak {n} days",
+ "board_none": "Nobody has played yet.",
+ "board_row": "{i}. {name}  {p} pts  {s} s",
+ "top_day": "Today's leaders", "top_week": "This week's leaders", "top_month": "This month's leaders",
+ "remind_off": "Reminders off. Use /remind on to turn them back on.",
+ "remind_on": "You will get a reminder at {h}:00 if you have not played.",
+ "help": "/play today's questions\n/score my points\n/top today's board\n/top week weekly board\n/top month monthly board\n/name board name\n/lang language\n/remind off reminders off\n/remind on reminders on",
+ "reminder": "Today's quiz is still open. {hl} hours left until {r}:00. {n} questions in two minutes.",
+ "morning": "Good morning. {line}\nDay {d}. Today's themes {cats}.\nPlay before {r}:00.",
+},
+}
+MORNING_LINES_TR = {
+ "hi": ["सोमवार की शुरुआत शहर की पहचान से.", "मंगलवार. आज पाँच सवाल और तीस सेकंड की चुनौती.", "बुधवार. हफ़्ते का बीच. सूची में ऊपर जाने का मौका.",
+        "गुरुवार. कल जो छूटा आज पूरा करें.", "शुक्रवार. हफ़्ते के विजेताओं की दौड़ रंग में है.", "शनिवार. आराम से खेलें पर घड़ी तीस सेकंड की ही.", "रविवार. आज रात हफ़्ते के विजेता घोषित."],
+ "en": ["Start Monday by knowing your city.", "Tuesday. Five questions and a thirty second challenge.", "Wednesday. Midweek. A chance to climb the board.",
+        "Thursday. Make up for what you missed yesterday.", "Friday. The race for weekly winners is heating up.", "Saturday. Relax and play but the clock is still thirty seconds.", "Sunday. Weekly winners announced tonight."],
+}
+
+
+def t(lang, key, **kw):
+    d = T.get(lang) or T["mr"]
+    v = d.get(key, T["mr"].get(key, key))
+    return v.format(**kw) if kw and isinstance(v, str) else v
+
+
+def cat_name(cat, lang):
+    if lang == "mr":
+        return cat
+    return CAT_NAMES.get(cat, {}).get(lang, cat)
+
+
+def qtext(q, lang):
+    """(question, options, explanation) in the user's language, Marathi if no translation."""
+    tr = q.get("tr", {}).get(lang) if lang != "mr" else None
+    if tr:
+        return tr["question"], tr["options"], tr["explanation"]
+    return q["question"], q["options"], q["explanation"]
 POINTS_CORRECT = 10
 POLL_OPEN_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))   # question closes after this
 SPEED_BONUS = [(10, 5), (20, 3), (30, 1)]   # (within seconds, bonus points)
@@ -113,7 +333,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_answers_day ON answers(qday);
             """
         )
-        for col in ("display_name TEXT", "area TEXT", "profession TEXT", "birth_year INTEGER"):
+        for col in ("display_name TEXT", "area TEXT", "profession TEXT", "birth_year INTEGER", "lang TEXT"):
             try:
                 con.execute(f"ALTER TABLE users ADD COLUMN {col}")
             except sqlite3.OperationalError:
@@ -309,7 +529,14 @@ def load_questions():
                     "source": (r.get("source") or "").strip(),
                     "image": (r.get("image") or "").strip(),
                     "date": norm_date((r.get("date") or "").strip()),
+                    "tr": {},
                 }
+                for lg in ("hi", "en"):
+                    vals = {f: (r.get(f"{f}_{lg}") or "").strip() for f in TR_FIELDS}
+                    if vals["question"] and all(vals[f"option_{x}"] for x in "abcd"):
+                        q["tr"][lg] = {"question": vals["question"],
+                                       "options": [vals["option_a"], vals["option_b"], vals["option_c"], vals["option_d"]],
+                                       "explanation": vals["explanation"]}
                 if q["question"] and all(q["options"]):
                     rows.append(q)
             except Exception as e:
@@ -429,6 +656,16 @@ def get_display_name(user_id):
     return r["display_name"] if r and r["display_name"] else ""
 
 
+def ulang(user_id) -> str:
+    with db() as con:
+        r = con.execute("SELECT lang FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return r["lang"] if r and r["lang"] in LANGS else "mr"
+
+
+def play_kb(lang, key="play_btn"):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, key), callback_data="play")]])
+
+
 def leaderboard(period: str, limit=10, qday=None):
     """period: day | week | month. Returns list of (user_id, name, points, seconds)."""
     today = date.fromisoformat(qday or quiz_day())
@@ -530,24 +767,24 @@ async def send_next_question(context: ContextTypes.DEFAULT_TYPE, user_id: int, q
     if not remaining:
         await send_result(context, user_id, qday)
         return
+    lang = ulang(user_id)
     if qday == quiz_day() and not quiz_open_now():
-        await safe_send(context.bot, user_id,
-                        f"आजची स्पर्धा रात्री {RESULT_HOUR} वाजता संपली. उद्या सकाळी {QUIZ_HOUR} वाजता पुढचे प्रश्न.")
+        await safe_send(context.bot, user_id, t(lang, "closed", r=RESULT_HOUR, h=QUIZ_HOUR))
         return
     q = remaining[0]
     idx = len(sent_ids)
-    expl = q["explanation"]
+    qq, opts, expl = qtext(q, lang)
     if q["source"]:
-        expl = (expl + "\nस्रोत " + q["source"]).strip()
+        expl = (expl + "\n" + t(lang, "source") + " " + q["source"]).strip()
     if q.get("image"):
         try:
             img = q["image"]
             path = await asyncio.to_thread(image_bytes, img) if (img.startswith("http") or "." in img) else None
             if path:
                 with open(path, "rb") as fh:
-                    await context.bot.send_photo(user_id, fh, caption=f"प्रश्न {idx + 1} साठी फोटो")
+                    await context.bot.send_photo(user_id, fh, caption=t(lang, "photo_cap", i=idx + 1))
             else:
-                await context.bot.send_photo(user_id, img, caption=f"प्रश्न {idx + 1} साठी फोटो")  # telegram file_id
+                await context.bot.send_photo(user_id, img, caption=t(lang, "photo_cap", i=idx + 1))  # telegram file_id
         except Forbidden:
             return
         except Exception as e:
@@ -555,8 +792,8 @@ async def send_next_question(context: ContextTypes.DEFAULT_TYPE, user_id: int, q
     try:
         msg = await context.bot.send_poll(
             chat_id=user_id,
-            question=f"प्रश्न {idx + 1}/{len(qs)}  ({POLL_OPEN_SECONDS} सेकंद)\n{q['question']}",
-            options=q["options"],
+            question=t(lang, "q_header", i=idx + 1, n=len(qs), s=POLL_OPEN_SECONDS) + "\n" + qq,
+            options=opts,
             type="quiz",
             correct_option_id=q["correct"],
             is_anonymous=False,
@@ -600,7 +837,7 @@ async def job_poll_timeout(context: ContextTypes.DEFAULT_TYPE):
             "INSERT OR REPLACE INTO answers(user_id,qday,qid,correct,seconds,points,ts) VALUES(?,?,?,?,?,?,?)",
             (d["user_id"], d["qday"], d["qid"], 0, POLL_OPEN_SECONDS, 0, now().isoformat()),
         )
-    await safe_send(context.bot, d["user_id"], "वेळ संपली. हा प्रश्न ० गुण. पुढचा प्रश्न येतोय.")
+    await safe_send(context.bot, d["user_id"], t(ulang(d["user_id"]), "timeout"))
     await send_next_question(context, d["user_id"], d["qday"])
 
 
@@ -671,8 +908,7 @@ async def maybe_pay_referral(context, user_id, qday=None):
             return
         con.execute("UPDATE users SET referral_paid=1 WHERE user_id=?", (user_id,))
     add_bonus(u["referred_by"], qday, f"ref_{user_id}", REFERRAL_BONUS)
-    await safe_send(context.bot, u["referred_by"],
-                    f"तुमच्या आमंत्रणाने आलेल्या मित्राने आजची स्पर्धा पूर्ण केली. तुम्हाला {REFERRAL_BONUS} बोनस गुण मिळाले.")
+    await safe_send(context.bot, u["referred_by"], t(ulang(u["referred_by"]), "referral_paid", b=REFERRAL_BONUS))
 
 
 async def send_result(context, user_id, qday=None):
@@ -681,28 +917,30 @@ async def send_result(context, user_id, qday=None):
         cur = con.execute("INSERT OR IGNORE INTO results_sent(user_id,qday) VALUES(?,?)", (user_id, qday))
         if cur.rowcount == 0:
             return      # result for this day already sent once
+    lang = ulang(user_id)
     rank, pts, secs, total = user_rank_today(user_id, qday)
     top = leaderboard("day", 3, qday)
     streak = streak_days(user_id)
-    streak_line = f"सलग दिवस <b>{streak}</b>"
+    streak_line = t(lang, "res_streak", n=streak)
     if streak and streak % STREAK_BONUS_DAYS == 0 and add_bonus(user_id, qday, "streak", STREAK_BONUS):
-        streak_line += f"  सलग {streak} दिवसांचा बोनस {STREAK_BONUS} गुण"
-    lines = [f"<b>आजचा निकाल</b>  दिवस {day_number(qday)}",
-             f"गुण <b>{pts}</b> / {QUESTIONS_PER_DAY * (POINTS_CORRECT + SPEED_BONUS[0][1])}",
-             f"वेळ {secs:.0f} सेकंद",
-             f"आजचा नंबर <b>{rank}</b> ({total} खेळाडूंमध्ये)",
+        streak_line += t(lang, "res_streak_bonus", n=streak, b=STREAK_BONUS)
+    lines = [t(lang, "res_title", d=day_number(qday)),
+             t(lang, "res_pts", p=pts, m=QUESTIONS_PER_DAY * (POINTS_CORRECT + SPEED_BONUS[0][1])),
+             t(lang, "res_time", s=f"{secs:.0f}"),
+             t(lang, "res_rank", r=rank, t=total),
              streak_line, ""]
     if top:
-        lines.append("आजचे आघाडीवर")
+        lines.append(t(lang, "res_top"))
         for i, r in enumerate(top, 1):
             lines.append(f"{i}. {shown_name(r)}  {r['pts']}")
-    lines += ["", f"उत्तरं आणि विजेते रात्री {RESULT_HOUR} वाजता चॅनलवर.",
-              f"मित्राला आमंत्रण द्या आणि {REFERRAL_BONUS} बोनस गुण मिळवा.",
-              "यादीतलं तुमचं नाव बदलायचं असेल तर /name."]
+    lines += ["", t(lang, "res_channel", r=RESULT_HOUR),
+              t(lang, "res_invite", b=REFERRAL_BONUS),
+              t(lang, "res_name")]
+    from urllib.parse import quote
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("मित्राला पाठवा",
-                              url=f"https://t.me/share/url?url=https://t.me/{context.bot.username}?start=ref_{user_id}&text=रोज%205%20प्रश्न.%20तुमचं%20शहर%20किती%20ओळखता%3F")],
-        [InlineKeyboardButton("माझा महिन्याचा हिशेब", callback_data="top_month")],
+        [InlineKeyboardButton(t(lang, "share_btn"),
+                              url=f"https://t.me/share/url?url=https://t.me/{context.bot.username}?start=ref_{user_id}&text={quote(t(lang, 'share_text'))}")],
+        [InlineKeyboardButton(t(lang, "month_btn"), callback_data="top_month")],
     ])
     await safe_send(context.bot, user_id, "\n".join(lines), reply_markup=kb)
 
@@ -732,33 +970,68 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             con.execute("UPDATE users SET name=?, username=? WHERE user_id=?",
                         (user.full_name, user.username, user.id))
-    done = answered_count(user.id, quiz_day())
+    with db() as con:
+        has_lang = con.execute("SELECT lang FROM users WHERE user_id=?", (user.id,)).fetchone()["lang"] in LANGS
+    if not has_lang:
+        await ask_language(update.message, first=True)
+        return
+    await continue_start(update.message, context, user.id, user.first_name)
+
+
+LANG_KB = InlineKeyboardMarkup([[InlineKeyboardButton("मराठी", callback_data="lang_mr"),
+                                 InlineKeyboardButton("हिंदी", callback_data="lang_hi"),
+                                 InlineKeyboardButton("English", callback_data="lang_en")]])
+
+
+async def ask_language(message, first=False):
+    txt = "भाषा निवडा.  भाषा चुनें.  Choose your language." if first else "भाषा निवडा / भाषा चुनें / Choose language"
+    await message.reply_text(txt, reply_markup=LANG_KB)
+
+
+async def continue_start(message, context, user_id, first_name):
+    lang = ulang(user_id)
+    done = answered_count(user_id, quiz_day())
     if done >= QUESTIONS_PER_DAY:
-        await update.message.reply_text(
-            f"नमस्कार {user.first_name}. आजची स्पर्धा तुम्ही पूर्ण केली आहे. उद्या सकाळी {QUIZ_HOUR} वाजता पुढचे प्रश्न येतील.\n/score माझे गुण  /top आजची यादी")
+        await message.reply_text(t(lang, "done_today", h=QUIZ_HOUR))
         return
-    text = (f"नमस्कार {user.first_name}. <b>Know Your City</b> मध्ये स्वागत.\n\n"
-            f"रोज सकाळी {QUIZ_HOUR} वाजता तुमच्या शहराबद्दल {QUESTIONS_PER_DAY} प्रश्न. "
-            f"बरोबर उत्तराला {POINTS_CORRECT} गुण आणि वेगाचा बोनस {SPEED_BONUS[0][1]} पर्यंत. "
-            f"रोज आठवड्याला आणि महिन्याला विजेते जाहीर होतात.\n\n"
+    text = (t(lang, "welcome", name=first_name, h=QUIZ_HOUR, n=QUESTIONS_PER_DAY, p=POINTS_CORRECT, b=SPEED_BONUS[0][1])
             + (f"{SPONSOR_TEXT}\n\n" if SPONSOR_TEXT else ""))
-    if not profile_complete(user.id):
-        await update.message.reply_text(text + "सुरू करण्यापूर्वी चार छोट्या गोष्टी.", parse_mode=ParseMode.HTML)
-        await ask_next_profile_step(update.message, context, user.id)
+    if not profile_complete(user_id):
+        await message.reply_text(text + t(lang, "before_start"), parse_mode=ParseMode.HTML)
+        await ask_next_profile_step(message, context, user_id)
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
-    await update.message.reply_text(text + "तयार असाल तर खालचं बटण दाबा.", parse_mode=ParseMode.HTML, reply_markup=kb)
+    await message.reply_text(text + t(lang, "press_play"), parse_mode=ParseMode.HTML, reply_markup=play_kb(lang))
+
+
+async def cmd_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ask_language(update.message)
+
+
+async def on_lang_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    lang = q.data[len("lang_"):]
+    if lang not in LANGS:
+        return
+    user = q.from_user
+    with db() as con:
+        exists = con.execute("SELECT 1 FROM users WHERE user_id=?", (user.id,)).fetchone()
+        if not exists:
+            con.execute("INSERT INTO users(user_id,name,username,joined,source) VALUES(?,?,?,?,?)",
+                        (user.id, user.full_name, user.username, now().isoformat(), ""))
+        con.execute("UPDATE users SET lang=? WHERE user_id=?", (lang, user.id))
+    try:
+        await q.edit_message_text(t(lang, "lang_set"))
+    except BadRequest:
+        pass
+    if not profile_complete(user.id):
+        await continue_start(q.message, context, user.id, user.first_name)
 
 
 # --------------------------------------------------------------------------
 # Onboarding profile: name, area, profession, birth year (asked once)
 # --------------------------------------------------------------------------
-PROFILE_STEPS = [
-    ("display_name", "तुमचं नाव काय. हेच नाव विजेत्यांच्या यादीत दिसेल."),
-    ("area", "तुम्ही कुठे राहता. भाग किंवा गाव. उदाहरण कोथरूड किंवा बारामती."),
-    ("profession", "तुम्ही काय करता. उदाहरण विद्यार्थी. शिक्षक. व्यवसाय. नोकरी. गृहिणी. शेती."),
-    ("birth_year", "तुमचं जन्मवर्ष. फक्त चार अंक. उदाहरण 1995."),
-]
+PROFILE_STEPS = [("display_name", "ask_name"), ("area", "ask_area"), ("profession", "ask_prof"), ("birth_year", "ask_year")]
 
 
 def profile_complete(user_id) -> bool:
@@ -779,27 +1052,29 @@ def next_profile_field(user_id):
 
 
 async def ask_next_profile_step(message, context, user_id):
+    lang = ulang(user_id)
     step = next_profile_field(user_id)
     if step is None:
         context.user_data.pop("profile_field", None)
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
         if answered_count(user_id, quiz_day()) >= QUESTIONS_PER_DAY:
-            await message.reply_text("धन्यवाद. माहिती नोंदवली.")
+            await message.reply_text(t(lang, "thanks_saved"))
         else:
-            await message.reply_text("धन्यवाद. आता खालचं बटण दाबा.", reply_markup=kb)
+            await message.reply_text(t(lang, "thanks_play"), reply_markup=play_kb(lang))
         return
-    field, prompt = step
+    field, key = step
     context.user_data["profile_field"] = field
     if field == "profession":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("विद्यार्थी", callback_data="prof_विद्यार्थी"), InlineKeyboardButton("नोकरी", callback_data="prof_नोकरी")],
-            [InlineKeyboardButton("व्यवसाय", callback_data="prof_व्यवसाय"), InlineKeyboardButton("शेती", callback_data="prof_शेती")],
-            [InlineKeyboardButton("गृहिणी", callback_data="prof_गृहिणी"), InlineKeyboardButton("शिक्षक", callback_data="prof_शिक्षक")],
-            [InlineKeyboardButton("निवृत्त", callback_data="prof_निवृत्त"), InlineKeyboardButton("इतर", callback_data="prof_इतर")],
-        ])
-        await message.reply_text(prompt + " बटण दाबा किंवा लिहा.", reply_markup=kb)
+        names = t(lang, "prof")
+        # stored value is always the Marathi label so the Excel stays uniform
+        mr = T["mr"]["prof"]
+        rows, row = [], []
+        for i, nm in enumerate(names):
+            row.append(InlineKeyboardButton(nm, callback_data=f"prof_{mr[i]}"))
+            if len(row) == 2:
+                rows.append(row); row = []
+        await message.reply_text(t(lang, key), reply_markup=InlineKeyboardMarkup(rows))
     else:
-        await message.reply_text(prompt)
+        await message.reply_text(t(lang, key))
 
 
 async def save_profile_value(update: Update, context, user_id, field, value, message):
@@ -808,12 +1083,12 @@ async def save_profile_value(update: Update, context, user_id, field, value, mes
         digits = "".join(ch for ch in value if ch.isdigit())
         digits = digits.translate(str.maketrans("०१२३४५६७८९", "0123456789"))
         if len(digits) != 4 or not (1920 <= int(digits) <= now().year - 5):
-            await message.reply_text("जन्मवर्ष चार अंकात लिहा. उदाहरण 1995.")
+            await message.reply_text(t(ulang(user_id), "year_err"))
             return False
         value = int(digits)
     else:
         if len(value) < 2 or value.startswith("/"):
-            await message.reply_text("किमान दोन अक्षरं लिहा.")
+            await message.reply_text(t(ulang(user_id), "short_err"))
             return False
         value = value[:40]
     with db() as con:
@@ -827,8 +1102,12 @@ async def on_profession_button(update: Update, context: ContextTypes.DEFAULT_TYP
     prof = q.data[len("prof_"):]
     with db() as con:
         con.execute("UPDATE users SET profession=? WHERE user_id=?", (prof, q.from_user.id))
+    lang = ulang(q.from_user.id)
+    shown = prof
+    if prof in T["mr"]["prof"]:
+        shown = t(lang, "prof")[T["mr"]["prof"].index(prof)]
     try:
-        await q.edit_message_text(f"व्यवसाय {prof}.")
+        await q.edit_message_text(t(lang, "prof_set", p=shown))
     except BadRequest:
         pass
     await ask_next_profile_step(q.message, context, q.from_user.id)
@@ -841,23 +1120,23 @@ async def cmd_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data["await_name"] = True
         cur = get_display_name(update.effective_user.id)
-        await update.message.reply_text(
-            (f"सध्याचं नाव {cur}. " if cur else "") + "यादीत दाखवायचं नवं नाव लिहून पाठवा.")
+        lang = ulang(update.effective_user.id)
+        await update.message.reply_text((t(lang, "name_cur", n=cur) if cur else "") + t(lang, "name_ask"))
 
 
 async def set_display_name(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str):
     name = name.strip().replace("<", "").replace(">", "")[:30]
+    lang = ulang(update.effective_user.id)
     if len(name) < 2 or name.startswith("/"):
-        await update.message.reply_text("नाव किमान दोन अक्षरांचं हवं. पुन्हा लिहा.")
+        await update.message.reply_text(t(lang, "name_err"))
         return
     with db() as con:
         con.execute("UPDATE users SET display_name=? WHERE user_id=?", (name, update.effective_user.id))
     context.user_data.pop("await_name", None)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
     if answered_count(update.effective_user.id, quiz_day()) >= QUESTIONS_PER_DAY:
-        await update.message.reply_text(f"ठीक. यादीत {name} असं दिसेल.")
+        await update.message.reply_text(t(lang, "name_ok", n=name))
     else:
-        await update.message.reply_text(f"ठीक. यादीत {name} असं दिसेल. तयार असाल तर खालचं बटण दाबा.", reply_markup=kb)
+        await update.message.reply_text(t(lang, "name_ok", n=name) + " " + t(lang, "press_play"), reply_markup=play_kb(lang))
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -880,11 +1159,16 @@ async def on_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     user_id = q.from_user.id
-    if not profile_complete(user_id):
-        await ask_next_profile_step(q.message, context, user_id)
+    if ulang(user_id) not in LANGS or not profile_complete(user_id):
+        with db() as con:
+            r = con.execute("SELECT lang FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not r or r["lang"] not in LANGS:
+            await ask_language(q.message, first=True)
+        else:
+            await ask_next_profile_step(q.message, context, user_id)
         return
     if answered_count(user_id, quiz_day()) >= QUESTIONS_PER_DAY:
-        await q.edit_message_text("आजची स्पर्धा तुम्ही पूर्ण केली आहे. उद्या भेटू.")
+        await q.edit_message_text(t(ulang(user_id), "done_short"))
         return
     try:
         await q.edit_message_reply_markup(None)
@@ -898,8 +1182,10 @@ async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with db() as con:
         if not con.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone():
             return await cmd_start(update, context)
+    if not profile_complete(user_id):
+        return await cmd_start(update, context)
     if answered_count(user_id, quiz_day()) >= QUESTIONS_PER_DAY:
-        await update.message.reply_text("आजची स्पर्धा तुम्ही पूर्ण केली आहे. उद्या भेटू.")
+        await update.message.reply_text(t(ulang(user_id), "done_short"))
         return
     await send_next_question(context, user_id)
 
@@ -918,19 +1204,20 @@ async def cmd_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mob = con.execute("SELECT COALESCE(SUM(points),0) FROM bonuses WHERE user_id=? AND qday>=?",
                           (user_id, today.replace(day=1).isoformat())).fetchone()[0]
         days = con.execute("SELECT COUNT(DISTINCT qday) FROM answers WHERE user_id=?", (user_id,)).fetchone()[0]
-    text = (f"<b>माझे गुण</b>\n"
-            f"आज {pts} गुण" + (f"  नंबर {rank}" if rank else "  (अजून खेळला नाही)") + "\n"
-            f"या आठवड्यात {wk + wkb} (बोनस {wkb})\nया महिन्यात {mo + mob} (बोनस {mob})\n"
-            f"एकूण खेळलेले दिवस {days}\nसलग दिवस {streak_days(user_id)}")
+    lang = ulang(user_id)
+    text = (t(lang, "sc_title") + "\n"
+            + t(lang, "sc_today", p=pts) + (t(lang, "sc_rank", r=rank) if rank else t(lang, "sc_none")) + "\n"
+            + t(lang, "sc_week", t=wk + wkb, b=wkb) + "\n" + t(lang, "sc_month", t=mo + mob, b=mob) + "\n"
+            + t(lang, "sc_days", d=days) + "\n" + t(lang, "sc_streak", n=streak_days(user_id)))
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
-def fmt_board(title, rows):
+def fmt_board(title, rows, lang="mr"):
     if not rows:
-        return f"<b>{title}</b>\nअजून कोणी खेळलं नाही."
+        return f"<b>{title}</b>\n" + t(lang, "board_none")
     lines = [f"<b>{title}</b>"]
     for i, r in enumerate(rows, 1):
-        lines.append(f"{i}. {shown_name(r)}  {r['pts']} गुण  {r['secs']:.0f} से.")
+        lines.append(t(lang, "board_row", i=i, name=shown_name(r), p=r["pts"], s=f"{r['secs']:.0f}"))
     return "\n".join(lines)
 
 
@@ -938,23 +1225,25 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     period = (context.args[0] if context.args else "day").lower()
     if period not in ("day", "week", "month"):
         period = "day"
-    title = {"day": "आजचे आघाडीवर", "week": "या आठवड्याचे आघाडीवर", "month": "या महिन्याचे आघाडीवर"}[period]
-    await update.message.reply_text(fmt_board(title, leaderboard(period)), parse_mode=ParseMode.HTML)
+    lang = ulang(update.effective_user.id)
+    await update.message.reply_text(fmt_board(t(lang, "top_" + period), leaderboard(period), lang), parse_mode=ParseMode.HTML)
 
 
 async def on_top_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await safe_send(context.bot, q.from_user.id, fmt_board("या महिन्याचे आघाडीवर", leaderboard("month")))
+    lang = ulang(q.from_user.id)
+    await safe_send(context.bot, q.from_user.id, fmt_board(t(lang, "top_month"), leaderboard("month"), lang))
 
 
 async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     arg = (context.args[0] if context.args else "").lower()
+    lang = ulang(user_id)
     if arg in ("off", "बंद"):
-        val, msg = 0, "आठवण बंद केली. /remind on ने पुन्हा सुरू करता येईल."
+        val, msg = 0, t(lang, "remind_off")
     else:
-        val, msg = 1, f"रोज दुपारी {REMIND_HOUR} वाजता न खेळल्यास आठवण येईल."
+        val, msg = 1, t(lang, "remind_on", h=REMIND_HOUR)
     with db() as con:
         con.execute("UPDATE users SET remind=? WHERE user_id=?", (val, user_id))
     await update.message.reply_text(msg)
@@ -962,8 +1251,7 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/play आजचे प्रश्न\n/score माझे गुण\n/top आजची यादी\n/top week आठवड्याची यादी\n"
-        "/top month महिन्याची यादी\n/remind off आठवण बंद\n/remind on आठवण सुरू"
+        t(ulang(update.effective_user.id), "help")
         + ("\n\nऍडमिन\n/add नवा प्रश्न\n/bank प्रश्न साठा\n/show 12 प्रश्न बघा\n/del 12 प्रश्न काढा\n/preview आजचे प्रश्न\n/stats आकडे\n/post morning|evening|remind\n/broadcast मेसेज\n/export Excel\n/backup\n/refreeze आजचे प्रश्न पुन्हा" if is_admin(update) else ""))
 
 
@@ -1058,7 +1346,7 @@ def build_export_xlsx(path):
     from openpyxl.styles import Font, PatternFill
     wb = Workbook()
     ws = wb.active; ws.title = "users"
-    ws.append(["user_id", "नाव", "टेलिग्राम नाव", "username", "भाग", "व्यवसाय", "जन्मवर्ष", "वय",
+    ws.append(["user_id", "नाव", "टेलिग्राम नाव", "username", "भाषा", "भाग", "व्यवसाय", "जन्मवर्ष", "वय",
                "जोडले", "कुठून", "खेळलेले दिवस", "एकूण गुण"])
     with db() as con:
         rows = con.execute(
@@ -1067,7 +1355,7 @@ def build_export_xlsx(path):
         yr = now().year
         for r in rows:
             age = (yr - r["birth_year"]) if r["birth_year"] else ""
-            ws.append([r["user_id"], r["display_name"] or "", r["name"] or "", r["username"] or "",
+            ws.append([r["user_id"], r["display_name"] or "", r["name"] or "", r["username"] or "", r["lang"] or "mr",
                        r["area"] or "", r["profession"] or "", r["birth_year"] or "", age,
                        (r["joined"] or "")[:10], r["source"] or "", r["d"], r["p"]])
         ws2 = wb.create_sheet("answers")
@@ -1657,14 +1945,14 @@ async def job_reminder(context: ContextTypes.DEFAULT_TYPE):
     qday = quiz_day()
     with db() as con:
         users = con.execute(
-            "SELECT user_id FROM users WHERE remind=1 AND user_id NOT IN "
+            "SELECT user_id, lang FROM users WHERE remind=1 AND user_id NOT IN "
             "(SELECT user_id FROM answers WHERE qday=?)", (qday,)).fetchall()
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("आता खेळा", callback_data="play")]])
     hours_left = max(1, RESULT_HOUR - now().hour)
-    text = f"आजची स्पर्धा अजून बाकी आहे. रात्री {RESULT_HOUR} पर्यंत {hours_left} तास उरले. दोन मिनिटांत {QUESTIONS_PER_DAY} प्रश्न."
     n = 0
     for u in users:
-        if await safe_send(context.bot, u["user_id"], text, reply_markup=kb):
+        lg = u["lang"] if u["lang"] in LANGS else "mr"
+        text = t(lg, "reminder", r=RESULT_HOUR, hl=hours_left, n=QUESTIONS_PER_DAY)
+        if await safe_send(context.bot, u["user_id"], text, reply_markup=play_kb(lg, "play_now_btn")):
             n += 1
         await asyncio.sleep(0.05)   # ~20 msg/sec, under Telegram limit
     log.info("reminders sent: %d", n)
@@ -1679,6 +1967,9 @@ async def job_evening(context: ContextTypes.DEFAULT_TYPE):
     for i, q in enumerate(qs, 1):
         lines.append(f"\n{i}. {q['question']}\n✔ {q['options'][q['correct']]}"
                      + (f"\n{q['explanation']}" if q["explanation"] else ""))
+        en = q.get("tr", {}).get("en")
+        if en:
+            lines.append(f"   {en['question']}  ✔ {en['options'][q['correct']]}")
     with db() as con:
         played = con.execute("SELECT COUNT(DISTINCT user_id) FROM answers WHERE qday=?", (qday,)).fetchone()[0]
     lines.append(f"\nआज {played} जणांनी खेळलं.")
@@ -1696,14 +1987,17 @@ async def job_evening(context: ContextTypes.DEFAULT_TYPE):
 async def job_morning_push(context: ContextTypes.DEFAULT_TYPE):
     """Send the morning kick-off to every registered user (private chat)."""
     with db() as con:
-        users = con.execute("SELECT user_id FROM users WHERE remind=1").fetchall()
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("आजची स्पर्धा खेळा", callback_data="play")]])
+        users = con.execute("SELECT user_id, lang FROM users WHERE remind=1").fetchall()
     qd = quiz_day()
+    wd = date.fromisoformat(qd).weekday()
     cats = [q["category"] for q in questions_for_day(qd) if q["category"]]
-    text = (f"सुप्रभात. {MORNING_LINES[date.fromisoformat(qd).weekday()]}\n"
-            f"दिवस {day_number(qd)}. आजचे विषय " + ". ".join(cats) + f".\nरात्री {RESULT_HOUR} पर्यंत खेळा.")
+    texts = {}
+    for lg in LANGS:
+        line = MORNING_LINES[wd] if lg == "mr" else MORNING_LINES_TR[lg][wd]
+        texts[lg] = t(lg, "morning", line=line, d=day_number(qd), cats=". ".join(cat_name(c, lg) for c in cats), r=RESULT_HOUR)
     for u in users:
-        await safe_send(context.bot, u["user_id"], text, reply_markup=kb)
+        lg = u["lang"] if u["lang"] in LANGS else "mr"
+        await safe_send(context.bot, u["user_id"], texts[lg], reply_markup=play_kb(lg))
         await asyncio.sleep(0.05)
 
 
@@ -1712,7 +2006,8 @@ async def job_morning_push(context: ContextTypes.DEFAULT_TYPE):
 # --------------------------------------------------------------------------
 async def post_init(app: Application):
     await app.bot.set_my_commands([
-        BotCommand("play", "आजचे प्रश्न"),
+        BotCommand("play", "आजचे प्रश्न / Play"),
+        BotCommand("lang", "भाषा / Language"),
         BotCommand("score", "माझे गुण"),
         BotCommand("top", "आजची यादी"),
         BotCommand("name", "यादीतलं माझं नाव बदला"),
@@ -1771,6 +2066,8 @@ def main():
     app.add_handler(CallbackQueryHandler(on_play, pattern="^play$"))
     app.add_handler(CallbackQueryHandler(on_top_month, pattern="^top_month$"))
     app.add_handler(CallbackQueryHandler(on_profession_button, pattern="^prof_"))
+    app.add_handler(CallbackQueryHandler(on_lang_button, pattern="^lang_"))
+    app.add_handler(CommandHandler("lang", cmd_lang))
     app.add_handler(PollAnswerHandler(on_poll_answer))
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, on_document))
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, on_photo))
